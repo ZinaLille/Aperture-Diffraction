@@ -1,0 +1,7 @@
+Model: best_model.pt
+Data: data
+Val samples: 500
+
+Physics MAE: 0.000000 ¡À 0.000000
+Predicted MAE: 0.000000 ¡À 0.000000
+Improvement: -37057.16% ¡À 40188.57%
