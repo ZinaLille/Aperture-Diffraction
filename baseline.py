@@ -1,9 +1,9 @@
 """
-baseline.py (修复版)
+baseline.py
 
 无物理信息基线模型，用于和 PhysicsGuidedModel 做对比实验。
 
-关键修复 (相比原版):
+关键修复:
     1. PureUNet 去掉 sigmoid，改用线性输出
        → 真值均值≈0.05，sigmoid 初始输出≈0.5，会让 L1 从 0.45 起步并陷入饱和
     2. 输出层小权重 + bias=target_mean 初始化
@@ -13,7 +13,7 @@ baseline.py (修复版)
     5. LR 从 1e-3 降到 3e-4，baseline 起点差，大 LR 会发散
     6. 训练前打印初始 L1，作为“修复是否生效”的自检
 
-设计原则 (不变):
+设计原则:
     1. 与 PhysicsGuidedModel 的残差 U-Net 使用完全相同的骨干
     2. 参数量几乎一致 (差 288 个, 忽略不计)
     3. 唯一区别: 无 FFT 物理层, 端到端从光阑直接预测衍射图样
@@ -44,7 +44,7 @@ from train import (
 BASELINE_PATH = 'baseline_model.pt'
 COMPARE_DIR = 'comparison'
 
-# baseline 专用 LR (起点差, 大 LR 会震荡发散)
+# baseline 专用 LR
 BASELINE_LR = 3e-4
 
 
@@ -106,7 +106,7 @@ class PureUNet(nn.Module):
         # 输出层 (线性, 无 sigmoid)
         self.out_conv = nn.Conv2d(base_ch, 1, 1)
 
-        # ⚠️ 关键修复: 输出层初始化
+        # 关键修复: 输出层初始化
         #    权重很小 → 初始输出主要由 bias 决定
         #    bias = target_mean → 初始 I_pred ≈ 0.05 (真值均值)
         nn.init.normal_(self.out_conv.weight, mean=0.0, std=1e-3)
@@ -124,7 +124,7 @@ class PureUNet(nn.Module):
         d2 = self.up2(d3); d2 = self.dec2(torch.cat([d2, e2], dim=1))
         d1 = self.up1(d2); d1 = self.dec1(torch.cat([d1, e1], dim=1))
 
-        # ⚠️ 线性输出, 无 sigmoid
+        # 线性输出, 无 sigmoid
         return self.out_conv(d1)
 
 
@@ -214,7 +214,7 @@ def train():
         l1_init = (I0 - p0.unsqueeze(0).to(DEVICE)).abs().mean().item()
     print(f"初始 L1 (训练前): {l1_init:.5f}")
     if l1_init > 0.3:
-        print("⚠ 初始 L1 异常大! 检查 target_mean 是否正确, "
+        print("初始 L1 异常大! 检查 target_mean 是否正确, "
               "或 out_conv 初始化被后续代码覆盖")
     model.train()
 
