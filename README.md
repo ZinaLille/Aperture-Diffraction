@@ -253,12 +253,149 @@ Aperture-Diffraction/
 3. **⚠️ 一个必须指出的偏差。** `eval_results/metrics.txt` 里出现了 `Improvement: -37057%` 这类异常数值，原因是：数据生成与物理层**在数学上完全相同**，导致物理层输出与标签的 MAE 已到 $10^{-7}$ 量级，分母趋近于 0 时**百分比改善指标数值失稳**。因此该百分比不应作为结论，应以 MAE / PSNR / Corr 为准。
 4. **由此暴露的局限（也解释了为什么需要第二、三阶段）：** 当前正向任务几乎等价于"FFT + 恒等"，任务本身过于理想化，无法真正检验泛化能力。真正有挑战性的场景是**逆问题**与**存在外界干扰**的情形——那时物理层与真实测量不再完全一致，残差网络才有实际可学的空间。
 
-### 5.3 产出物
+### 5.3 产出物清单
 
 - 正向模型与基线权重：`best_model.pt`、`baseline_model.pt`；
-- 训练可视化：`train_result.png`（光阑 | 物理层 | 预测 | 真值 | 残差）、`loss_curve.png`、`baseline_loss_curve.png`；
+- 训练可视化：`train_result.png`、`loss_curve.png`、`baseline_loss_curve.png`；
 - 评估结果：`eval_results/`（`samples.png`、`error_map.png`、`error_histogram.png`、`extreme_test.png`、`sweep_*.png`、`metrics.txt`）；
 - 对比结果：`comparison/`（`side_by_side.png`、`mae_distribution.png`、`per_sample.png`、`metrics.txt`）。
+
+下面逐张解释这些图，并注明它们由哪个脚本、哪段代码生成。
+
+### 5.4 训练过程图解读
+
+#### 图 1 · `train_result.png` —— 正向模型预测总览
+
+![正向模型预测总览（光阑 | 物理层 | 预测 | 真值 | 残差）](train_result.png)
+
+由 `train.py::visualize()` 生成，从验证集中随机抽 4 个样本，每个样本一行、共 5 列：
+
+| 列 | 含义 | 期望现象 |
+|----|------|----------|
+| 1 `Aperture` | 输入光阑（灰度） | 各类几何形状 |
+| 2 `I_sim (physics)` | 物理层 FFT 输出 | 与第 4 列几乎一致 |
+| 3 `I_pred (physics+res)` | 残差修正后输出 | 与第 2 列几乎重合 |
+| 4 `Ground truth` | 数据标签 | 参考基准 |
+| 5 `Residual ΔI` | 残差网络输出（RdBu_r，以 0 为中心） | 整体接近 0 |
+
+每行第 5 列下方标注 `sim MAE` 与 `pred MAE`。**读图要点**：第 2、3、4 列肉眼几乎相同、第 5 列接近中性色（0），说明物理层已把主项算准、残差网络只做了极小修正——这是"物理层与数据生成严格一致"的直接体现。
+
+#### 图 2 · `loss_curve.png` —— 正向模型多分量损失曲线
+
+![正向模型损失曲线（L1 / 频域 / SSIM / 残差正则）](loss_curve.png)
+
+由 `train.py::plot_loss_curve()` 生成，横轴为 epoch，蓝线 train、橙线 val，纵轴取对数，最多 4 个子图：
+
+1. **L1 loss**：空间域主损失，训练/验证同步快速下降并收敛，说明拟合有效且未明显过拟合；
+2. **Freq log-magnitude L1**：频域 $\log(1+|F\hat I|)$ 与真值的差，刻画旁瓣、级次等高频结构是否学对；
+3. **SSIM loss $(1-\text{SSIM})$**：结构相似度损失，衡量几何结构（艾里环、光栅级次）的一致性；
+4. **Residual regularization $|\Delta I|$**：残差幅度正则项，稳定在极小值，对应"残差≈0"。
+
+**读图要点**：四条曲线同时单调下降且验证曲线贴合训练曲线，说明物理层提供了正确的起点，训练稳定、无发散。
+
+#### 图 3 · `baseline_loss_curve.png` —— 无物理层基线训练曲线
+
+![无物理层基线（PureUNet）的训练曲线](baseline_loss_curve.png)
+
+由 `baseline.py::train()` 生成，单子图：横轴 epoch，纵轴 L1（对数），train/val 两条曲线。
+
+**读图要点**：与图 2 对比可看出，纯数据驱动的 U-Net 收敛更慢、平台更高（验证 L1 长期停在 $10^{-3}$ 量级，对应 MAE≈0.0027），且下降幅度有限——这正是"没有物理先验时网络学不动 FFT"的直观证据。详细对比见第 6 节。
+
+### 5.5 评估可视化解读（`eval_results/`）
+
+以下图均由 `python evaluate.py` 生成（默认取验证集前 500 个样本）。
+
+#### 图 4 · `eval_results/samples.png` —— 多样本五联对比
+
+![评估：8 个样本的对比（光阑/物理层/预测/真值/残差/MAE）](eval_results/samples.png)
+
+由 `evaluate.py::plot_samples()` 生成，8 行 × 6 列：`Aperture | I_sim | I_pred | Ground truth | Residual ΔI | MAE 文本`。最后一列给出每个样本的物理层 MAE 与预测 MAE 数值，便于逐样本核对。**读图要点**：物理层与预测列高度一致，残差图接近中性，MAE 文本栏数值极小。
+
+#### 图 5 · `eval_results/error_map.png` —— 误差地图与剖面
+
+![评估：误差热图与中心行剖面](eval_results/error_map.png)
+
+由 `evaluate.py::plot_error_map()` 生成，2×4 布局：
+
+- 上行：`Aperture`、`I_sim`、`I_pred`、`Ground truth`；
+- 下行：`|Error| physics`（hot 色标）、`|Error| predicted`（hot 色标，共用同一 vmax 便于比较）、`Improvement = |err_sim| - |err_pred|`（RdYlGn，绿=物理更好、红=更差）、`Center row profile`（中心行三条曲线的重叠对比）。
+
+**读图要点**：物理与预测的误差图几乎全黑（误差极小），Improvement 图整体偏绿，中心行剖面三条曲线几乎重合，说明不仅整体、连剖面细节都吻合。
+
+#### 图 6 · `eval_results/error_histogram.png` —— 误差分布统计
+
+![评估：误差分布直方图与逐样本散点](eval_results/error_histogram.png)
+
+由 `evaluate.py::plot_error_histogram()` 生成，1×3：
+
+- 左：物理层与预测的**逐样本 MAE 直方图**（标注各自均值）；
+- 中：**改善百分比直方图**，红色虚线为均值、黑线为 0（无改善）；
+- 右：**散点图**物理 MAE vs 预测 MAE，配 $y=x$ 参考线，点落在参考线下方即预测更优。
+
+**读图要点**：两套 MAE 都集中在极小的数值区间，散点紧贴 $y=x$ 且靠近原点——注意，当物理层 MAE 本身已到 $10^{-7}$ 量级时，中间的"改善百分比"会因分母趋零而剧烈波动（详见 5.2 节第 3 点的说明），应结合左、右两图来看。
+
+#### 图 7 · `eval_results/extreme_test.png` —— 极端输入泛化测试
+
+![评估：极端输入的泛化测试](eval_results/extreme_test.png)
+
+由 `evaluate.py::extreme_test()` 生成，8 行（`Single slit`、`Double slit`、`Circle`、`Square`、`Grating`、`Full open`、`Full blocked`、`Single point`）× 3 列（光阑、`physics only`、`predicted`）。
+
+**读图要点**：这些形状多数**未直接出现在训练分布**中（如全通、全挡、单点等退化输入）。由于物理层是解析精确的 FFT，即便网络没学过，物理层仍给出正确图样；`predicted` 与 `physics only` 基本一致，说明物理层带来了对分布外输入的稳健性——这正是纯数据驱动模型最难具备的能力。
+
+#### 图 8 · `eval_results/sweep_slit_width.png` —— 缝宽参数扫描
+
+![评估：缝宽从 2 到 32 的参数扫描](eval_results/sweep_slit_width.png)
+
+由 `evaluate.py::sweep_slit_width()` 生成，2×8：上行为缝宽 $w\in\{2,4,6,8,12,16,24,32\}$ 时模型预测的衍射图样，下行为对应的中心行剖面曲线。
+
+**读图要点**：缝越窄，沿垂直方向的衍射越"铺开"、主极大越宽；缝越宽，能量越向中心集中。模型输出完整重现了"缝宽与衍射展宽成反比"的物理规律。
+
+#### 图 9 · `eval_results/sweep_circle_radius.png` —— 圆孔半径参数扫描
+
+![评估：圆孔半径从 5 到 70 的参数扫描](eval_results/sweep_circle_radius.png)
+
+由 `evaluate.py::sweep_circle_radius()` 生成，2×8：半径 $r\in\{5,10,15,20,30,40,55,70\}$ 的预测图样与中心剖面。
+
+**读图要点**：小孔给出舒展的艾里斑与清晰同心环，随半径增大，中央亮斑收缩、环间距变小，符合艾里斑第一暗环半径 $\propto 1/r$ 的理论预期。
+
+#### 图 10 · `eval_results/sweep_grating_period.png` —— 光栅周期参数扫描
+
+![评估：光栅周期从 6 到 64 的参数扫描](eval_results/sweep_grating_period.png)
+
+由 `evaluate.py::sweep_grating_period()` 生成，2×8：周期 $p\in\{6,10,14,18,24,32,48,64\}$ 的预测图样与中心剖面。
+
+**读图要点**：光栅周期越大，相邻衍射级次的间距越小、级次越密集；周期越小级次分得越开。这与光栅方程 $d\sin\theta=m\lambda$ 的规律一致。
+
+### 5.6 对比实验图解读（`comparison/`）
+
+以下图由 `python baseline.py compare` 生成，用于"有物理层 vs 无物理层"的横向对比。
+
+#### 图 11 · `comparison/side_by_side.png` —— 两模型并排对比
+
+![对比：物理层/物理+残差/基线 并排对比](comparison/side_by_side.png)
+
+由 `baseline.py::plot_side_by_side()` 生成，8 行 × 6 列：`Aperture | Physics only | Physics + Residual(ours) | Baseline PureUNet | Ground truth | |Error| comparison`。最后一列绘制 `err_baseline - err_physics`（RdYlGn，绿色表示物理引导误差更小）。
+
+**读图要点**：`Physics + Residual`（绿字）与 `Ground truth` 几乎一致；`Baseline PureUNet`（红字）明显偏离真值；误差对比列大面积偏绿，直观说明物理引导胜出。
+
+#### 图 12 · `comparison/mae_distribution.png` —— 逐样本 MAE 分布对比
+
+![对比：逐样本 MAE 分布与散点](comparison/mae_distribution.png)
+
+由 `baseline.py::plot_mae_distribution()` 生成，1×2：
+
+- 左：三条 MAE 直方图叠加——Baseline（红）、Physics+Residual（绿）、Physics only（蓝），各自标注均值；
+- 右：散点图，横轴 Baseline MAE、纵轴 Physics+Residual MAE，配 $y=x$ 参考线，并标注"Physics better on X% samples"。
+
+**读图要点**：红色分布整体右移（误差大）、绿色与蓝色挤在最左侧（误差极小）；散点几乎全部落在 $y=x$ 线下方，说明在**绝大多数样本**上物理引导都更优。
+
+#### 图 13 · `comparison/per_sample.png` —— 按基线误差排序的逐样本曲线
+
+![对比：按基线 MAE 排序的逐样本曲线](comparison/per_sample.png)
+
+由 `baseline.py::plot_per_sample_mae()` 生成，横轴为按 Baseline MAE 升序排列的样本序号，纵轴 MAE，红=Baseline、绿=Physics+Residual。
+
+**读图要点**：绿色曲线在整个横轴区间都压在红色曲线下方，且几乎贴近 0，说明物理引导的优势不是"个别样本的偶然"，而是**全局、系统性**的。
 
 ---
 
@@ -336,6 +473,8 @@ Aperture-Diffraction/
 1. **纯 CNN 基本"没学会"。** 相关系数仅 0.0057，意味着输出与真值**几乎不相关**——网络退化成输出一个接近常数均值的结果，MAE 停在 0.0027 附近下不去。
 2. **物理引导模型几乎精确。** Corr = 1.0，误差到数值精度级别。因为物理层已给出主项，残差网络只需输出 ≈0 即可。
 3. **残差确实退化为恒等映射。** 这正是"零初始化 + 残差正则"的预期结果：网络发现无需修正物理层。换个角度看，第一阶段的任务被物理层"解掉"了大部分，这也解释了为什么第二、三阶段（逆问题、毛玻璃干扰）才真正有挑战。
+
+> 对应的可视化对比图见 **5.6 节（图 11–13）**：`side_by_side.png` 直观展示两模型的并排差异，`mae_distribution.png` 与 `per_sample.png` 从统计与逐样本两个角度佐证上述结论。
 
 ### 6.6 深度问答：物理层为什么"没有参数"？它到底可不可微？
 
