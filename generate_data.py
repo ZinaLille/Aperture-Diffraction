@@ -42,8 +42,7 @@ LOG_ALPHA = 100.0
 # 噪声强度
 APERTURE_NOISE = 0.005
 
-np.random.seed(SEED)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Keep imports read-only. The legacy command initializes its output in main().
 
 
 # ============================================================
@@ -507,6 +506,8 @@ def simulate_diffraction(aperture):
 # 主流程
 # ============================================================
 def main():
+    np.random.seed(SEED)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     print("=" * 60)
     print("生成模拟数据")
     print("=" * 60)

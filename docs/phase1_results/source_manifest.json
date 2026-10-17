@@ -1,0 +1,162 @@
+{
+  "export_date": "2026-10-16",
+  "note": "Selected original files copied byte-for-byte; no training results modified.",
+  "files": [
+    {
+      "export": "forward_summary.csv",
+      "source": "fresnel_runs/all_first/summary.csv",
+      "bytes": 2078,
+      "sha256": "c4e860e090b9f0becb88a917d54144782b3c7a331463c79d7064948431db3d32"
+    },
+    {
+      "export": "asm_reference_summary.csv",
+      "source": "fresnel_reference/asm_v1/summary.csv",
+      "bytes": 13110,
+      "sha256": "75554009e77c225b4bc36ae59a12c77bb53c93ceed165e2c05bcc0db55f1ae6e"
+    },
+    {
+      "export": "asm_training_summary.csv",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/summary.csv",
+      "bytes": 469,
+      "sha256": "4317ba4af65488623a64f8759c2edd870db467b1be1327ceea2722076921d616"
+    },
+    {
+      "export": "asm_nf3_history.csv",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_3/physics/history.csv",
+      "bytes": 3092,
+      "sha256": "271f180a816a5e916ef2297e7f50aea6b6a8e667c2fa1fa2dd9bd587dd24853a"
+    },
+    {
+      "export": "asm_nf5_history.csv",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_5/physics/history.csv",
+      "bytes": 3078,
+      "sha256": "31de15f233246a0ebdfb5f39bd61be8510756247ca7e410e9d198d34e319e4e2"
+    },
+    {
+      "export": "asm_nf3_selection.json",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_3/physics/selection.json",
+      "bytes": 125,
+      "sha256": "a94f58fb3def3f9cced8a06f9852979bae1bb5ca23d2928018024ef5a8146075"
+    },
+    {
+      "export": "asm_nf5_selection.json",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_5/physics/selection.json",
+      "bytes": 123,
+      "sha256": "2e50282301faab9b674be0853b6f8bdb9f35d99895424a392293241ba5783874"
+    },
+    {
+      "export": "asm_timing_summary.csv",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/timing_summary.csv",
+      "bytes": 535,
+      "sha256": "9d9b15b8d2a84492738bae4c71d834eb41440c7b1b74abcae6bd644bb3158925"
+    },
+    {
+      "export": "rs1_summary.csv",
+      "source": "fresnel_checks/rs1_audit_v1/summary.csv",
+      "bytes": 1077,
+      "sha256": "922c5829ea3280258021b7c35facd057b12378dc683495f9ceb969866445a7df"
+    },
+    {
+      "export": "rs1_model_summary.csv",
+      "source": "fresnel_checks/rs1_audit_v1/model_summary.csv",
+      "bytes": 593,
+      "sha256": "dfa648aceecd45c539e257decb6c58f1cec9c37a5438828bd4fbf74f5f14788f"
+    },
+    {
+      "export": "rs1_win_counts.json",
+      "source": "fresnel_checks/rs1_audit_v1/win_counts.json",
+      "bytes": 490,
+      "sha256": "19a27a8db3eee52a0bee73fd3dd038c88bf843dc121473da51d055d7d8344af2"
+    },
+    {
+      "export": "rs1_completion.json",
+      "source": "fresnel_checks/rs1_audit_v1/completion.json",
+      "bytes": 190,
+      "sha256": "17376c2b39ace56be4677cfadfc965d7f6c69755a4a60bf361c3f2316c44693a"
+    },
+    {
+      "export": "rs1_verification.json",
+      "source": "fresnel_checks/rs1_audit_v1/verification.json",
+      "bytes": 899,
+      "sha256": "6ced4dee08d6ddac389503be1431a21f0290622fd93400ca4cb92c474644841d"
+    },
+    {
+      "export": "rs1_convergence.csv",
+      "source": "fresnel_checks/rs1_audit_v1/convergence.csv",
+      "bytes": 23534,
+      "sha256": "4fa0589f89b6e13141d66b3b16e1c6776579320fffd68e1de847a072a6b09ba2"
+    },
+    {
+      "export": "rs1_comparisons.csv",
+      "source": "fresnel_checks/rs1_audit_v1/comparisons.csv",
+      "bytes": 9342,
+      "sha256": "a48bde9144bce212eb813cd2930407c700180c82d5034337efce5bdc42462f12"
+    },
+    {
+      "export": "rs1_case_metrics.csv",
+      "source": "fresnel_checks/rs1_audit_v1/case_metrics.csv",
+      "bytes": 49055,
+      "sha256": "fe35a49fdf38365f9c8cf42abf31994f621027e2358aac75a29bc57fabee3998"
+    },
+    {
+      "export": "rs1_model_metrics_auxiliary.csv",
+      "source": "fresnel_checks/rs1_audit_v1/model_metrics_auxiliary.csv",
+      "bytes": 31056,
+      "sha256": "2c915473abedcfbc16f127e69c89d12906cd6c538fcac259c0ff66aa37cdc9c7"
+    },
+    {
+      "export": "dataset_manifest.json",
+      "source": "fresnel_data/v1/manifest.json",
+      "bytes": 1838,
+      "sha256": "b47488eb84de29a91d9c4327bbaacd400d2129c6ea0f7fd9037c36ebf2dd6c4c"
+    },
+    {
+      "export": "propagation_validation.json",
+      "source": "fresnel_data/v1/validation.json",
+      "bytes": 4714,
+      "sha256": "4344d8e42d84fe58b63be43255bbe94ec1aa792046286598fe792a7f8d90c872"
+    },
+    {
+      "export": "forward_group_comparison.png",
+      "source": "fresnel_analysis/review_20261015/group_comparison.png",
+      "bytes": 102511,
+      "sha256": "700d0f827e3cba4262a8614c8492a725783f8d35f0c4de39a7e1a09b99c48392"
+    },
+    {
+      "export": "asm_reference_mae.png",
+      "source": "fresnel_reference/asm_v1/test_mae_comparison.png",
+      "bytes": 57036,
+      "sha256": "249b91bd6fea0c6b328f5820cb6e24e08267c302040d7c478181948912d05138"
+    },
+    {
+      "export": "asm_nf3_loss_curve.png",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_3/physics/loss_curve.png",
+      "bytes": 32431,
+      "sha256": "7ddbf27fac7e5f4819a5cb365126ea001e64dad93c5172cd0bfadcdc37adee2a"
+    },
+    {
+      "export": "asm_nf5_loss_curve.png",
+      "source": "fresnel_runs/asm_nf3_nf5_e10_v1/nf_5/physics/loss_curve.png",
+      "bytes": 31771,
+      "sha256": "37908a3d4317f39219f45a2ea9edae6c015641474fe7f4890b98aa454c98b552"
+    },
+    {
+      "export": "rs1_physics_comparison.png",
+      "source": "fresnel_checks/rs1_audit_v1/physics_comparison.png",
+      "bytes": 66273,
+      "sha256": "b32b538e21eb8960abdaba0d24d948e168c6be2266546689ffc59a3386f1004b"
+    },
+    {
+      "export": "rs1_nf5_examples.png",
+      "source": "fresnel_checks/rs1_audit_v1/nf_5_examples.png",
+      "bytes": 663370,
+      "sha256": "df132760fbb86ddda6d2ec00994bae190d9fd8e9a19edc9993822ba65de7ad33"
+    },
+    {
+      "export": "legacy_metrics.txt",
+      "source": "comparison/metrics.txt",
+      "bytes": 487,
+      "sha256": "34fddf4d65a770d626c84dc72af52ed8e46cfe25a7259072c6f2ca6dd4f7f918"
+    }
+  ]
+}

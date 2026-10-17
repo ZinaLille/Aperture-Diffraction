@@ -1,0 +1,296 @@
+{
+  "date": "2026-10-16",
+  "scope": "Recommended complete upload set, including required legacy root modules; not a remote Git diff.",
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 598,
+      "sha256": "6d676c8181e420fc6d61c82eb6c300212b22060929195b6afdfe6f8191cf5a19"
+    },
+    {
+      "path": "README.md",
+      "bytes": 9709,
+      "sha256": "bf0b8dc968dabf5e31fdc8e16465d8bd6d6d462b588e20eb0e2e04deb00ee1b5"
+    },
+    {
+      "path": "baseline.py",
+      "bytes": 21489,
+      "sha256": "b119071f7ba93021f59a9e7ae2932c1e16dd59a484d166270e0e41ca9a419f6c"
+    },
+    {
+      "path": "docs/PHASE1_CHECKPOINT.md",
+      "bytes": 1862,
+      "sha256": "71b72148a08eb688c57acfc8e231fa9e72385f3988df6f635345b566ac7bf37c"
+    },
+    {
+      "path": "docs/PUBLISH_CHECK.json",
+      "bytes": 465,
+      "sha256": "09b2ddc788297b1056a1671c1924051f359ef5653c42ee303f6e8525f3901853"
+    },
+    {
+      "path": "docs/UPLOAD_GUIDE.md",
+      "bytes": 6488,
+      "sha256": "0df4b82c2e39afd063994ce7d709bf285d850682e07349ccbe0e65e51ca9edc7"
+    },
+    {
+      "path": "docs/UPLOAD_MANIFEST.json",
+      "sha256": null,
+      "note": "Self entry; excluded from self-hash."
+    },
+    {
+      "path": "docs/legacy_far_field.md",
+      "bytes": 3108,
+      "sha256": "62b643a79e720b95ff0403e847393c9ddb065aec950dd5a79c73f114989579af"
+    },
+    {
+      "path": "docs/phase1_results/README.md",
+      "bytes": 5513,
+      "sha256": "37ef03d282b2407033387ed25464a45919f7a33a04a7319f9ffaf8b19484c6c5"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf3_history.csv",
+      "bytes": 3092,
+      "sha256": "271f180a816a5e916ef2297e7f50aea6b6a8e667c2fa1fa2dd9bd587dd24853a"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf3_loss_curve.png",
+      "bytes": 32431,
+      "sha256": "7ddbf27fac7e5f4819a5cb365126ea001e64dad93c5172cd0bfadcdc37adee2a"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf3_selection.json",
+      "bytes": 125,
+      "sha256": "a94f58fb3def3f9cced8a06f9852979bae1bb5ca23d2928018024ef5a8146075"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf5_history.csv",
+      "bytes": 3078,
+      "sha256": "31de15f233246a0ebdfb5f39bd61be8510756247ca7e410e9d198d34e319e4e2"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf5_loss_curve.png",
+      "bytes": 31771,
+      "sha256": "37908a3d4317f39219f45a2ea9edae6c015641474fe7f4890b98aa454c98b552"
+    },
+    {
+      "path": "docs/phase1_results/asm_nf5_selection.json",
+      "bytes": 123,
+      "sha256": "2e50282301faab9b674be0853b6f8bdb9f35d99895424a392293241ba5783874"
+    },
+    {
+      "path": "docs/phase1_results/asm_reference_mae.png",
+      "bytes": 57036,
+      "sha256": "249b91bd6fea0c6b328f5820cb6e24e08267c302040d7c478181948912d05138"
+    },
+    {
+      "path": "docs/phase1_results/asm_reference_summary.csv",
+      "bytes": 13110,
+      "sha256": "75554009e77c225b4bc36ae59a12c77bb53c93ceed165e2c05bcc0db55f1ae6e"
+    },
+    {
+      "path": "docs/phase1_results/asm_timing_summary.csv",
+      "bytes": 535,
+      "sha256": "9d9b15b8d2a84492738bae4c71d834eb41440c7b1b74abcae6bd644bb3158925"
+    },
+    {
+      "path": "docs/phase1_results/asm_training_summary.csv",
+      "bytes": 469,
+      "sha256": "4317ba4af65488623a64f8759c2edd870db467b1be1327ceea2722076921d616"
+    },
+    {
+      "path": "docs/phase1_results/dataset_manifest.json",
+      "bytes": 1838,
+      "sha256": "b47488eb84de29a91d9c4327bbaacd400d2129c6ea0f7fd9037c36ebf2dd6c4c"
+    },
+    {
+      "path": "docs/phase1_results/environment.json",
+      "bytes": 281,
+      "sha256": "cd8af9eff4f1ed59303a0720d2a8d852552a8b7541c3326a5cbab472e74adbba"
+    },
+    {
+      "path": "docs/phase1_results/experiment_configs.json",
+      "bytes": 7880,
+      "sha256": "1321a5eb26143cca1cdd8ac7879dc404bff955c420ef6f65fa5eb6be8e13868b"
+    },
+    {
+      "path": "docs/phase1_results/forward_group_comparison.png",
+      "bytes": 102511,
+      "sha256": "700d0f827e3cba4262a8614c8492a725783f8d35f0c4de39a7e1a09b99c48392"
+    },
+    {
+      "path": "docs/phase1_results/forward_summary.csv",
+      "bytes": 2078,
+      "sha256": "c4e860e090b9f0becb88a917d54144782b3c7a331463c79d7064948431db3d32"
+    },
+    {
+      "path": "docs/phase1_results/legacy_metrics.txt",
+      "bytes": 487,
+      "sha256": "34fddf4d65a770d626c84dc72af52ed8e46cfe25a7259072c6f2ca6dd4f7f918"
+    },
+    {
+      "path": "docs/phase1_results/propagation_validation.json",
+      "bytes": 4714,
+      "sha256": "4344d8e42d84fe58b63be43255bbe94ec1aa792046286598fe792a7f8d90c872"
+    },
+    {
+      "path": "docs/phase1_results/rs1_case_metrics.csv",
+      "bytes": 49055,
+      "sha256": "fe35a49fdf38365f9c8cf42abf31994f621027e2358aac75a29bc57fabee3998"
+    },
+    {
+      "path": "docs/phase1_results/rs1_comparisons.csv",
+      "bytes": 9342,
+      "sha256": "a48bde9144bce212eb813cd2930407c700180c82d5034337efce5bdc42462f12"
+    },
+    {
+      "path": "docs/phase1_results/rs1_completion.json",
+      "bytes": 190,
+      "sha256": "17376c2b39ace56be4677cfadfc965d7f6c69755a4a60bf361c3f2316c44693a"
+    },
+    {
+      "path": "docs/phase1_results/rs1_convergence.csv",
+      "bytes": 23534,
+      "sha256": "4fa0589f89b6e13141d66b3b16e1c6776579320fffd68e1de847a072a6b09ba2"
+    },
+    {
+      "path": "docs/phase1_results/rs1_model_metrics_auxiliary.csv",
+      "bytes": 31056,
+      "sha256": "2c915473abedcfbc16f127e69c89d12906cd6c538fcac259c0ff66aa37cdc9c7"
+    },
+    {
+      "path": "docs/phase1_results/rs1_model_summary.csv",
+      "bytes": 593,
+      "sha256": "dfa648aceecd45c539e257decb6c58f1cec9c37a5438828bd4fbf74f5f14788f"
+    },
+    {
+      "path": "docs/phase1_results/rs1_nf5_examples.png",
+      "bytes": 663370,
+      "sha256": "df132760fbb86ddda6d2ec00994bae190d9fd8e9a19edc9993822ba65de7ad33"
+    },
+    {
+      "path": "docs/phase1_results/rs1_physics_comparison.png",
+      "bytes": 66273,
+      "sha256": "b32b538e21eb8960abdaba0d24d948e168c6be2266546689ffc59a3386f1004b"
+    },
+    {
+      "path": "docs/phase1_results/rs1_summary.csv",
+      "bytes": 1077,
+      "sha256": "922c5829ea3280258021b7c35facd057b12378dc683495f9ceb969866445a7df"
+    },
+    {
+      "path": "docs/phase1_results/rs1_verification.json",
+      "bytes": 899,
+      "sha256": "6ced4dee08d6ddac389503be1431a21f0290622fd93400ca4cb92c474644841d"
+    },
+    {
+      "path": "docs/phase1_results/rs1_win_counts.json",
+      "bytes": 490,
+      "sha256": "19a27a8db3eee52a0bee73fd3dd038c88bf843dc121473da51d055d7d8344af2"
+    },
+    {
+      "path": "docs/phase1_results/source_manifest.json",
+      "bytes": 6135,
+      "sha256": "890a72fdd3743986f8c80134e82402e30cd1fa2c62a2a9b24b25bace466399cb"
+    },
+    {
+      "path": "evaluate.py",
+      "bytes": 21613,
+      "sha256": "39e8ca8de67158cfb5db7a36275ea1674bcb7653f55e72fde68b004079787433"
+    },
+    {
+      "path": "fresnel_experiment/README.md",
+      "bytes": 13983,
+      "sha256": "9dd7457fcc2da2393e0c7b9234c9f8cfa854879fb598b498efc081b2323ea964"
+    },
+    {
+      "path": "fresnel_experiment/RS1_AUDIT_README.md",
+      "bytes": 5093,
+      "sha256": "dedd8d916a6b4abff7c2b8f8387bccc329fa1d3c7a07621cab437fcfbd5dea76"
+    },
+    {
+      "path": "fresnel_experiment/__init__.py",
+      "bytes": 79,
+      "sha256": "12d91bf9769f2a9e6cc0e3426401cbdca63e0766dc9044489dce9092d84163b9"
+    },
+    {
+      "path": "fresnel_experiment/apertures.py",
+      "bytes": 2064,
+      "sha256": "fec483f0cdaf5b0c19359cc0add2b955ccb21a35c9be77776ea3579c0c4c7367"
+    },
+    {
+      "path": "fresnel_experiment/generate.py",
+      "bytes": 5698,
+      "sha256": "b9b45a94452769ad154d978bcee599b32995a9783743435a5ea5db19398fb3f6"
+    },
+    {
+      "path": "fresnel_experiment/io_utils.py",
+      "bytes": 695,
+      "sha256": "f6a085a27d93a7c7835637b8ae87ffa5a415608bdd33ffdc8057dd281e034304"
+    },
+    {
+      "path": "fresnel_experiment/models.py",
+      "bytes": 3949,
+      "sha256": "510f2b42b0a5ff9ad962248c05acf8654ad5a1365c7031b920b07c59662176c9"
+    },
+    {
+      "path": "fresnel_experiment/physics.py",
+      "bytes": 6851,
+      "sha256": "4b604a7717a1c13a5e592c3e2cdb14aa69f903cff294d4f7cd347ef55b489d7f"
+    },
+    {
+      "path": "fresnel_experiment/reference.py",
+      "bytes": 11976,
+      "sha256": "5f0e797ec6ab8ffc8b0740cf32941f87cd787d9a49e57ac86ae105e954e3deda"
+    },
+    {
+      "path": "fresnel_experiment/rs1_audit.py",
+      "bytes": 22322,
+      "sha256": "9d0058fe80fa178dc1f5eab689f7febdc2d1623f2ff0ea936fad78d608889016"
+    },
+    {
+      "path": "fresnel_experiment/test_pipeline.py",
+      "bytes": 5822,
+      "sha256": "93455e44192e802c0378e453e455f786f8e38fb48cd46077c38d643631f13836"
+    },
+    {
+      "path": "fresnel_experiment/test_rs1_audit.py",
+      "bytes": 1973,
+      "sha256": "c0c38dd6706665ea26f30985cba12e02e7ed404883d05e87cffe727b10b20146"
+    },
+    {
+      "path": "fresnel_experiment/timing.py",
+      "bytes": 1004,
+      "sha256": "b8b5b3d2e19bc084ac071fd07213064dc6e5b962ae0ea141e9b841fcce46ef01"
+    },
+    {
+      "path": "fresnel_experiment/torch_physics.py",
+      "bytes": 4101,
+      "sha256": "dd56118a6f57ee0f8e3c4c2fbe2499a3541887f5588de41805bfa2fb0e349410"
+    },
+    {
+      "path": "fresnel_experiment/train.py",
+      "bytes": 24336,
+      "sha256": "76666c13f4b1d81a1c15b67c9ae22aed91410550f1a120b3ef37e1d8cfdc8941"
+    },
+    {
+      "path": "fresnel_experiment/validate.py",
+      "bytes": 7427,
+      "sha256": "cb5b1f6065c150a681af526fd66ab7bbb02dfd5f00fe7b91dc620878e6f2ca31"
+    },
+    {
+      "path": "generate_data.py",
+      "bytes": 22448,
+      "sha256": "262256a8376f574ea92a40245c88c393f3fda74542a5f6280c97921048d8f79b"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 217,
+      "sha256": "6e48499962d2caba9f5f295d84429d84b13371f0138a37acd2b965efce6da68d"
+    },
+    {
+      "path": "train.py",
+      "bytes": 24148,
+      "sha256": "0b007f221b5aa4bfa0ffd0b81a071c350bc3f853d47d3a588d98dafabafb2286"
+    }
+  ]
+}

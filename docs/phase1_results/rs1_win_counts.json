@@ -1,0 +1,23 @@
+[
+  {
+    "nf": 0.03,
+    "cases": 24,
+    "asm_better_cases": 19,
+    "asm_better_than_legacy_fft_cases": 24,
+    "margin_over_5x_ref_change_cases": 17
+  },
+  {
+    "nf": 3.0,
+    "cases": 24,
+    "asm_better_cases": 24,
+    "asm_better_than_legacy_fft_cases": 24,
+    "margin_over_5x_ref_change_cases": 24
+  },
+  {
+    "nf": 5.0,
+    "cases": 24,
+    "asm_better_cases": 24,
+    "asm_better_than_legacy_fft_cases": 24,
+    "margin_over_5x_ref_change_cases": 24
+  }
+]

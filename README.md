@@ -1,410 +1,151 @@
 # Aperture-Diffraction
 
-普通物理学实验 II —— 光阑衍射的深度学习探究
+普通物理学实验 II：可微物理传播与神经网络的光阑衍射探究。
 
-> 用「可微的物理模型 + 神经网络」学习 **光阑形状 ↔ 衍射图样** 的双向映射，分三个阶段推进。
+当前已完成**第一阶段：多菲涅耳数下的理想正向预测、物理层替换和收益归因**。项目从最初的远场FFT实验，扩展到有限距离传播与独立积分验证。逆向重建和含干扰双向系统仍待开展。
 
----
+[阶段结果与图表](docs/phase1_results/README.md) · [阶段检查点](docs/PHASE1_CHECKPOINT.md) · [运行说明](fresnel_experiment/README.md) · [GitHub上传清单](docs/UPLOAD_GUIDE.md)
 
-## 一、项目总览
+## 这段时间完成了什么
 
-### 1.1 三阶段目标与进度
+| 最初的远场版本 | 当前进度（2026-10-16） |
+|---|---|
+| 单一远场FFT仿真 | 七组菲涅耳数：0.01、0.03、0.1、0.3、1、3、5 |
+| 仅夫琅禾费物理层 | 新增零可学习参数、可微的缩放角谱层，可选fraunhofer/asm/hybrid |
+| 主要比较网络与基线 | 加入纯物理、epoch0和冻结模型对照，区分传播模型收益与网络收益 |
+| 原理及标准光阑自检 | 新增24个光阑、72例独立RS1直接积分与网格收敛检查 |
+| 基础训练日志 | 新增逐轮训练、验证、保存、单模型及总运行时间 |
+| 单次运行输出 | 共享ID划分、物理元数据、独占新目录、哈希核验和阶段检查点 |
 
-| 阶段 | 目标 | 关键方法 | 状态 |
-|------|------|----------|------|
-| **阶段一** | 训练**正向**网络：输入光阑形状，输出衍射图样，保证高准确率 | 物理引导残差学习（可微 FFT 物理层 + 残差 U-Net） | ✅ 已完成 |
-| **阶段二** | 训练**逆向**网络：输入衍射图样，输出光阑形状 | 逆网络 + 正向网络闭环（循环一致性损失） | ⏳ 待开展（见第四章） |
-| **阶段三** | 一、二合成完整**双向**预测网络，跨数据集鲁棒；有外界干扰（如毛玻璃）时误差小 | 双向联合训练 + 干扰建模 / 域随机化 | ⏳ 待开展（见第五章） |
+已完成的主要运行：七组分别训练夫琅禾费＋残差与基线，各50轮；七组纯角谱参照；NF=3、5分别训练10轮角谱残差模型；独立RS1检查全部通过预设收敛门槛。
 
-### 1.2 文档结构
+## 当前实验回答了什么
 
-| 章节 | 内容 | 状态 |
-|------|------|------|
-| 二 | 理论基础（三阶段共用） | 已填写 |
-| **三** | **阶段一：正向预测（光阑 → 衍射）** | ✅ 已填写 |
-| **四** | **阶段二：逆向预测（衍射 → 光阑）** | 📝 **预留区域，待填写** |
-| **五** | **阶段三：双向网络与鲁棒性** | 📝 **预留区域，待填写** |
-| 六 | 运行说明（依赖 / 步骤 / 文件结构） | 已填写 |
-| 七 | 引用与说明 | 已填写 |
+### 大菲涅耳数下，原夫琅禾费近似出现误差
 
-### 1.3 实现目的
+以下为每组96张相同ID测试图的归一化log强度MAE：
 
-衍射是波动光学的核心现象：**一个光阑形状决定了它远场的衍射图样**。经典做法是用傅里叶变换解析计算，但真实场景中往往希望反过来——**只看衍射图样，推断是什么形状的光阑**。这正是「相位恢复 / 逆散射」类问题的核心难点。
+| NF | 纯夫琅禾费 | 夫琅禾费＋残差 | 纯角谱（单精度） | 角谱＋残差最佳 |
+|---|---:|---:|---:|---:|
+| 3 | 0.00202053 | 0.00167484 | 1.53131e-9 | 1.53131e-9（epoch0） |
+| 5 | 0.00407073 | 0.00281578 | 2.25287e-9 | 2.25287e-9（epoch0） |
 
-本实验的目的：
+来源：[原模型汇总](docs/phase1_results/forward_summary.csv)、[角谱换层汇总](docs/phase1_results/asm_training_summary.csv)。近场标签由同一角谱算法生成，因此近零分数主要说明实现一致性。角谱残差的最佳权重均未经过更新，不能将换层收益计为新增神经网络收益。
 
-1. **第一阶段**：构建一个"光阑 → 衍射图样"的正向预测网络，并验证**引入物理先验**相比纯数据驱动网络的优势。核心命题是：当物理规律已知时，把它写进网络，可以让网络学得更准、更省、更稳。
-2. **第二阶段**：构建"衍射图样 → 光阑"的逆向网络。逆问题是**病态、多解**的，因此不能只做监督学习，而要把第一阶段的正向网络当作**可微的约束**：让逆网络的输出再送回正向网络，比较重建结果与原输入的 loss，从而反向传播校正逆网络权重（闭环 / 循环一致性训练）。
-3. **第三阶段**：把正、逆网络组合成一个完整的双向预测系统，并在**不同数据集**以及**存在外界干扰（例如毛玻璃）**的条件下验证鲁棒性，目标是干扰下误差尽量小。
+### 独立RS1积分支持角谱的物理优势
 
-> ⚠️ **运行前请先执行 `python generate_data.py` 生成数据集**（仓库未附带 `data/` 目录）。
+另生成24个新光阑，八类各3个，与原1000个输入无重复；检查NF=0.03、3、5，共72例。每例73至82个共同观察点，采用独立RS1直接积分并逐级加密，全部通过收敛检查。
 
----
+为控制离散差异，夫琅禾费加入解析sinc像素面积因子，与RS1、角谱采用相同的常透过率像素单元解释。主指标为抽样绝对强度误差的均值除以RS抽样峰值，再跨24例平均：
 
-## 二、理论基础（三阶段共用）
+| NF | 同像素面积夫琅禾费 | 当前角谱 | 角谱更优案例 |
+|---|---:|---:|---:|
+| 0.03 | 5.60503e-4 | 1.51730e-5 | 19/24 |
+| 3 | 0.133510 | 4.99791e-5 | 24/24 |
+| 5 | 0.304586 | 6.40216e-5 | 24/24 |
 
-### 2.1 标量衍射与夫琅禾费近似
+此指标与前表的全图log MAE定义不同。NF=3、5的改善均超过参考末次平均加密变化的5倍；它是数值判别门槛，不是严格误差界或统计显著性检验。
 
-设光阑的复振幅透过率为 $a(x,y)$。在**远场（夫琅禾费）条件**下
+![独立RS1传播验证](docs/phase1_results/rs1_physics_comparison.png)
 
-$$
-z \gg \frac{a_{\max}^2}{\lambda},
-$$
+角谱在大NF下的优势有独立传播依据，不能全部解释为复现标签生成器。加密角谱网格还会继续降低误差，说明当前实现仍有离散计算误差。
 
-衍射场的复振幅正比于光阑函数的二维傅里叶变换，观察面上的**光强**为
+### 残差网络的作用需要分别判断
 
-$$
-I(u,v) \;=\; \bigl|\,\mathcal{F}\{a(x,y)\}\,\bigr|^{2},
-$$
+旧夫琅禾费残差网络在新光阑的归一化图样辅助比较中，NF=3、5的平均误差分别降低26.32%、32.14%，支持它能够补偿部分近似误差。匹配角谱层后，两组新模型均选择零残差epoch0，尚未提供额外收益。完整口径、学习曲线及逐例数据见[阶段结果](docs/phase1_results/README.md)。
 
-其中 $\mathcal{F}\{\cdot\}$ 为二维傅里叶变换，$(u,v)$ 为与观察面坐标线性对应的空间频率。
+## 模型与物理约定
 
-由此可得几个定性结论（也是本实验数据正确性的判据）：
-
-- **圆孔** → 中央艾里斑 + 同心弱环（Airy pattern）；
-- **单缝 / 多缝** → 沿垂直于缝方向的 sinc 包络 + 干涉条纹；
-- **光栅** → 分立的高级次衍射斑；
-- **孔洞阵列** → 阵列因子 × 单孔因子的乘积结构（稀疏化 → 干涉尖峰）。
-
-尺寸与图样的关系是**反比**的：光阑越大，衍射图样越集中；光阑越小，衍射越"铺开"。这正是逆问题多解性的来源。
-
-### 2.2 数值离散与 FFT
-
-把光阑离散为 $N\times N$ 网格（本项目 $N=256$），离散化后上式用 FFT 实现：
-
-```python
-field_f   = fftshift(fft2(aperture))
-intensity = |field_f| ** 2
-```
-
-`fftshift` 把零频搬到图像中心，与光学观察面的直观坐标一致。
-
-### 2.3 动态范围与对数压缩
-
-衍射图样的动态范围极大（中心峰可比旁瓣亮 $10^3\sim10^6$ 倍）。若直接回归线性强度，loss 会被中心峰主导，旁瓣（承载形状信息的关键结构）几乎学不到。因此对强度做**对数压缩**：
+物理引导模型为：
 
 $$
-I_{\text{log}} = \frac{\log\!\bigl(1+\alpha\,I_{\text{norm}}\bigr)}{\max_{u,v}\,\log\!\bigl(1+\alpha\,I_{\text{norm}}\bigr)},\qquad \alpha = 100 .
+\hat I = \Phi(a,z) + R_\theta(a,\Phi(a,z),c),
 $$
 
-它既模拟了探测器/成像的压缩响应，也让中心峰与旁瓣在数值上量级接近，便于网络均衡学习。生成数据与训练中的物理层**必须使用完全相同的后处理**，否则会出现"物理层输出与标签不匹配"的伪误差。
+其中a为256×256光阑，Phi为固定可微传播层，c为按训练集统计归一化的log(z)和log(观察面像素间距)。基线使用同类U-Net，直接由a和c预测图样。
 
-### 2.4 物理引导神经网络（Physics-Guided Learning）—— 阶段一
+- 物理层可微、无可学习参数；自由残差并不保证最终输出非负、能量守恒或严格满足传播方程。
+- 默认输入像素间距10微米、波长532纳米，D为占用包围盒较长轴向跨度，NF=D²/(lambda*z)。
+- NF=0.01、0.03标签采用夫琅禾费FFT，其余五组采用缩放角谱。0.1是本实验切换点，不是普适物理边界。
+- 观察面像素间距为lambda*z/(N*input_pitch)，属于缩放观察面，不能直接解释为固定相机实验。
+- 七组共享1000个原始光阑及808/96/96划分，共7000对样本；当前不加光阑噪声、整体乘性缩放或独立观测噪声。
+- 每组独立训练，尚未验证跨NF外推。公共损失为空间L1＋0.1×频域log幅度L1，SSIM共同关闭；残差分支另加1e-3残差正则。
+- epoch0参与验证选优，测试集在选好权重后使用。PSNR采用固定数据范围1，与早期脚本定义不同。
 
-正向模型不是"让 CNN 从零去逼近 FFT"，而是把**已知的物理当成一个无参数、可微的算子层**直接嵌入网络：
+角谱内部也使用FFT；这里比较的是传播模型的近似及数值实现，不是“是否使用FFT”。详细实现见[物理与训练说明](fresnel_experiment/README.md)。
 
-$$
-\hat{I} \;=\; \underbrace{\Phi_{\text{phys}}(a)}_{\text{FFT 物理层}} \;+\; \underbrace{R_\theta\bigl(a,\ \Phi_{\text{phys}}(a)\bigr)}_{\text{残差网络}} .
-$$
+## 安装与快速检查
 
-思想来自残差学习（ResNet）与物理信息神经网络（PINN / Physics-Informed）：
-
-- 物理层已经给出"主项"，网络只需学习**残差修正项** $\Delta I$；
-- 残差网络输出层**零初始化**，训练起点就是 $\hat I = \Phi_{\text{phys}}(a)$，从"纯物理"开始，逐步叠加学到的修正；
-- 物理层无参数、不占用学习容量，天然保证输出满足衍射规律（可解释、可泛化）。
-
-### 2.5 逆问题与循环一致性 —— 阶段二 / 三
-
-逆问题 $I \mapsto a$ 的求逆是**相位恢复（phase retrieval）**：衍射测量只给了强度 $|\mathcal F a|^2$，**丢失了相位**。存在大量不同光阑给出（几乎）相同强度图样的情形，因此逆问题是**非线性、非凸、多解的**，必须引入先验才能稳定求解。
-
-本项目采用的策略是**闭环（循环一致性, cycle-consistency）训练**：
-
-$$
-\text{Loss} = \mathcal{L}\Bigl(\underbrace{\Phi_{\text{phys}}\bigl(G_\phi(I)\bigr)}_{\text{逆网络输出再走一遍正向}},\ I\Bigr),
-$$
-
-即让逆网络 $G_\phi$ 的输出经过（已知的、冻结或联合训练的）正向网络，重建出原衍射图样，用重建误差反向传播来校正 $G_\phi$。这与自编码器、CycleGAN 里的循环一致性约束同源，是第三阶段"双向网络"的理论基础。
-
----
-
-## 三、阶段一：正向预测（光阑 → 衍射）✅ 已完成
-
-> 本章为阶段一的完整记录：目标、数据、模型、损失、训练、结果指标与结果图解读。
-
-### 3.1 阶段目标
-
-训练一个网络，输入光阑形状、输出远场衍射图样，并在**同一数据与同一划分**下，证明"物理引导"优于纯数据驱动方案。
-
-### 3.2 数据生成（`generate_data.py`）
-
-1. **随机光阑生成**：内置 8 种策略，覆盖不同几何结构，保证数据多样性。
-
-   | 策略 | 内容 |
-   |------|------|
-   | `multi_elements` | 多个不同元素（矩形/圆/椭圆/多边形）随机摆放 |
-   | `slits` | 单缝/多缝，随机缝宽、缝距、倾角 |
-   | `grating` | 有限尺寸光栅（随机周期、占空比、角度） |
-   | `hole_array` | 孔洞阵列（网格 / 环形 / 随机） |
-   | `letter` | 字母形状（T/L/H/X/O/C/F/E） |
-   | `annular` | 环形 / 多环 / 扇形 |
-   | `mixed_grating` | 光栅 + 缺陷 + 附加圆孔 |
-   | `polygons` | 正多边形 / 不规则多边形 / 星形 / 十字 / 多个三角 |
-
-2. **物理模拟** `simulate_diffraction()`：与训练中的物理层逐行对齐——
-   `FFT → fftshift → |·|² → 归一化 → log(1+α·I) → 再归一化`。
-3. **噪声与透过率扰动**：乘性透过率 $[0.85,1.0]$、加性高斯噪声 $\sigma = 0.005$，再 clip 到 $[0,1]$，避免数据集过于"干净"。
-4. **输出**：`data/apertures.npy`、`data/patterns.npy`（$(N,256,256)$ float32），以及若干预览图。
-
-关键超参数：`GRID=256`、`N_SAMPLES=5000`、`SEED=42`、`LOG_ALPHA=100.0`、`APERTURE_NOISE=0.005`。
-
-### 3.3 正向模型（`train.py`）
-
-```
-光阑 a ──► FraunhoferLayer(可微, 无参数) ──► I_sim
-   │                                            │
-   └──────────────┐                             │
-                  ▼                             ▼
-            ResidualUNet(a, I_sim) ──► ΔI ──► Î = I_sim + ΔI
-```
-
-- **`FraunhoferLayer`**：纯 FFT + log 压缩，无参数、完全可微，与数据生成严格一致。
-- **`ResidualUNet`**：轻量 U-Net（`base_ch=32`），输入 2 通道 `concat(a, I_sim)`，输出单通道残差；下采样-上采样 + 跳跃连接；**输出层权重与偏置零初始化**，保证训练从"纯物理"出发。
-- **`PhysicsGuidedModel`**：串联上述两层，前向同时返回 `(I_pred, I_sim, ΔI)`，便于在 loss 中分别约束。
-
-### 3.4 损失函数（`train.py::Loss`）
-
-$$
-\mathcal{L} = \underbrace{\|Î - I\|_1}_{\text{空间 L1}}
- + \lambda_f \underbrace{\bigl\|\log(1+|FÎ|)-\log(1+|FI|)\bigr\|_1}_{\text{频域 log 幅度}}
- + \lambda_s \underbrace{(1-\text{SSIM}(Î,I))}_{\text{结构}}
- + \lambda_r \underbrace{\|ΔI\|_1}_{\text{残差正则}} .
-$$
-
-- **空间 L1**：主约束；
-- **频域 log 幅度**：对旁瓣/级次等高频细节更敏感，避免被中心峰掩盖；
-- **SSIM**：约束几何结构（艾里环、光栅级次）；
-- **残差 L1 正则**：鼓励残差接近 0，防止网络"重学"物理层已算好的部分；
-- $\lambda_f=0.1,\ \lambda_s=0.2,\ \lambda_r=10^{-3}$，各项均可单独关闭以做消融。
-
-（SSIM 通过 `torchmetrics` 或 `pytorch-msssim` 提供，未安装时自动置 0，不影响其余项。）
-
-### 3.5 训练策略
-
-- 优化器 AdamW（`lr=1e-3`, `weight_decay=1e-4`），余弦退火 `CosineAnnealingLR`；
-- `epochs=50`, `batch_size=32`, 验证集占 10%，梯度裁剪 `clip_grad_norm_=1.0`；
-- 按验证集 L1 保存最优权重到 `best_model.pt`；
-- **训练前自检**：用第 0 个样本比较物理层输出与标签的 MAE 与相关系数，若不匹配（MAE<1e-3 且 Corr>0.999 视为通过）则直接报错，防止"物理层与数据不一致"的隐蔽 bug。
-
-### 3.6 基线对照（`baseline.py`，无物理层）
-
-为了回答"物理先验到底有没有用"，实现了 `PureUNet`——**与残差网络完全相同的骨干结构**（参数量仅差 288 个，<0.02%），唯一区别是**没有 FFT 物理层**，端到端直接从光阑预测衍射图样。为公平，基线单独调参：`lr=3e-4`，输出层线性且 `bias=target_mean` 初始化（避免 sigmoid 在均值≈0.05 处饱和），并关闭 SSIM 与残差正则。
-
-### 3.7 评估方法（`evaluate.py`）
-
-指标：`MAE / MSE / RMSE / PSNR / 相对误差 / 相关系数 / 峰值位置误差`。可视化：样本对比、误差热图、误差直方图，以及**极端测试**（单缝、双缝、圆孔、方孔、光栅、全通、全挡、单点）与**参数扫描**（缝宽、圆孔半径、光栅周期）。
-
-### 3.8 实验结果
-
-#### 3.8.1 定量指标（验证集 500 个样本）
-
-来自 `comparison/metrics.txt`：
-
-| 模型 | MAE ↓ | RMSE ↓ | PSNR ↑ | Corr ↑ |
-|------|-------|--------|--------|--------|
-| Physics only（纯物理，无网络） | 0.000000 | 0.000000 | 172.71 | 1.00000 |
-| Baseline PureUNet（纯数据驱动） | 0.002694 | 0.024177 | 33.74 | 0.00572 |
-| **Physics + Residual（本项目）** | **0.000000** | **0.000000** | 144.51 | 1.00000 |
-
-相对基线的最优 MAE 改善：**+100%**（物理引导模型把误差压到数值精度级别，而纯数据驱动基线误差高出数百倍）。
-
-#### 3.8.2 结论与解读
-
-1. **物理先验极其有效。** 纯 U-Net 在同等容量、同等数据下，相关系数仅 **0.0057**（几乎等于在输出常数均值），而物理引导模型的相关系数为 **1.0**。这说明"光阑 → 衍射图样"的映射若交给网络从零学习，在 5000 样本规模下几乎学不动；把 FFT 作为可微层嵌入后，问题被化简为"学习一个接近 0 的残差"。
-2. **残差网络确实退化为近似恒等映射。** 训练日志与可视化显示残差 $\Delta I \approx 0$，即网络发现物理层已经足够好、无需额外修正——这与"输出层零初始化 + 残差正则"的设计预期一致。
-3. **⚠️ 一个必须指出的偏差。** `eval_results/metrics.txt` 里出现了 `Improvement: -37057%` 这类异常数值，原因是：数据生成与物理层**在数学上完全相同**，导致物理层输出与标签的 MAE 已到 $10^{-7}$ 量级，分母趋近于 0 时**百分比改善指标数值失稳**。因此该百分比不应作为结论，应以 MAE / PSNR / Corr 为准。
-4. **由此暴露的局限（也解释了为什么需要第二、三阶段）：** 当前正向任务几乎等价于"FFT + 恒等"，任务本身过于理想化，无法真正检验泛化能力。真正有挑战性的场景是**逆问题**与**存在外界干扰**的情形——那时物理层与真实测量不再完全一致，残差网络才有实际可学的空间。
-
-### 3.9 结果图解读
-
-以下按**文件名**逐张说明数据结构与"读图要点"（正文不内嵌图片，图片文件均在仓库中）。
-
-#### 图 1 · `train_result.png` —— 正向模型预测总览
-
-
-由 `train.py::visualize()` 生成，从验证集中随机抽 4 个样本，每个样本一行、共 5 列：
-
-| 列 | 含义 | 期望现象 |
-|----|------|----------|
-| 1 `Aperture` | 输入光阑（灰度） | 各类几何形状 |
-| 2 `I_sim (physics)` | 物理层 FFT 输出 | 与第 4 列几乎一致 |
-| 3 `I_pred (physics+res)` | 残差修正后输出 | 与第 2 列几乎重合 |
-| 4 `Ground truth` | 数据标签 | 参考基准 |
-| 5 `Residual ΔI` | 残差网络输出（RdBu_r，以 0 为中心） | 整体接近 0 |
-
-每行第 5 列下方标注 `sim MAE` 与 `pred MAE`。**读图要点**：第 2、3、4 列肉眼几乎相同、第 5 列接近中性色（0），说明物理层已把主项算准、残差网络只做了极小修正——这是"物理层与数据生成严格一致"的直接体现。
-
-#### 图 2 · `loss_curve.png` —— 正向模型多分量损失曲线
-
-
-由 `train.py::plot_loss_curve()` 生成，横轴为 epoch，蓝线 train、橙线 val，纵轴取对数，最多 4 个子图：
-
-1. **L1 loss**：空间域主损失，训练/验证同步快速下降并收敛，说明拟合有效且未明显过拟合；
-2. **Freq log-magnitude L1**：频域 $\log(1+|F\hat I|)$ 与真值的差，刻画旁瓣、级次等高频结构是否学对；
-3. **SSIM loss $(1-\text{SSIM})$**：结构相似度损失，衡量几何结构（艾里环、光栅级次）的一致性；
-4. **Residual regularization $|\Delta I|$**：残差幅度正则项，稳定在极小值，对应"残差≈0"。
-
-**读图要点**：四条曲线同时单调下降且验证曲线贴合训练曲线，说明物理层提供了正确的起点，训练稳定、无发散。
-
-#### 图 3 · `baseline_loss_curve.png` —— 无物理层基线训练曲线
-
-
-由 `baseline.py::train()` 生成，单子图：横轴 epoch，纵轴 L1（对数），train/val 两条曲线。
-
-**读图要点**：与图 2 对比可看出，纯数据驱动的 U-Net 收敛更慢、平台更高（验证 L1 长期停在 $10^{-3}$ 量级，对应 MAE≈0.0027），且下降幅度有限——这正是"没有物理先验时网络学不动 FFT"的直观证据。
-
-#### 图 4 · `eval_results/samples.png` —— 多样本五联对比
-
-
-由 `evaluate.py::plot_samples()` 生成，8 行 × 6 列：`Aperture | I_sim | I_pred | Ground truth | Residual ΔI | MAE 文本`。最后一列给出每个样本的物理层 MAE 与预测 MAE 数值，便于逐样本核对。**读图要点**：物理层与预测列高度一致，残差图接近中性，MAE 文本栏数值极小。
-
-#### 图 5 · `eval_results/error_map.png` —— 误差地图与剖面
-
-
-由 `evaluate.py::plot_error_map()` 生成，2×4 布局：
-
-- 上行：`Aperture`、`I_sim`、`I_pred`、`Ground truth`；
-- 下行：`|Error| physics`（hot 色标）、`|Error| predicted`（hot 色标，共用同一 vmax 便于比较）、`Improvement = |err_sim| - |err_pred|`（RdYlGn，绿=物理更好、红=更差）、`Center row profile`（中心行三条曲线的重叠对比）。
-
-**读图要点**：物理与预测的误差图几乎全黑（误差极小），Improvement 图整体偏绿，中心行剖面三条曲线几乎重合，说明不仅整体、连剖面细节都吻合。
-
-#### 图 6 · `eval_results/error_histogram.png` —— 误差分布统计
-
-
-由 `evaluate.py::plot_error_histogram()` 生成，1×3：
-
-- 左：物理层与预测的**逐样本 MAE 直方图**（标注各自均值）；
-- 中：**改善百分比直方图**，红色虚线为均值、黑线为 0（无改善）；
-- 右：**散点图**物理 MAE vs 预测 MAE，配 $y=x$ 参考线，点落在参考线下方即预测更优。
-
-**读图要点**：两套 MAE 都集中在极小的数值区间，散点紧贴 $y=x$ 且靠近原点——注意，当物理层 MAE 本身已到 $10^{-7}$ 量级时，中间的"改善百分比"会因分母趋零而剧烈波动（详见 3.8.2 节第 3 点），应结合左、右两图来看。
-
-#### 图 7 · `eval_results/extreme_test.png` —— 极端输入泛化测试
-
-
-由 `evaluate.py::extreme_test()` 生成，8 行（`Single slit`、`Double slit`、`Circle`、`Square`、`Grating`、`Full open`、`Full blocked`、`Single point`）× 3 列（光阑、`physics only`、`predicted`）。
-
-**读图要点**：这些形状多数**未直接出现在训练分布**中（如全通、全挡、单点等退化输入）。由于物理层是解析精确的 FFT，即便网络没学过，物理层仍给出正确图样；`predicted` 与 `physics only` 基本一致，说明物理层带来了对分布外输入的稳健性——这正是纯数据驱动模型最难具备的能力。
-
-#### 图 8 · `eval_results/sweep_slit_width.png` —— 缝宽参数扫描
-
-
-由 `evaluate.py::sweep_slit_width()` 生成，2×8：上行为缝宽 $w\in\{2,4,6,8,12,16,24,32\}$ 时模型预测的衍射图样，下行为对应的中心行剖面曲线。
-
-**读图要点**：缝越窄，沿垂直方向的衍射越"铺开"、主极大越宽；缝越宽，能量越向中心集中。模型输出完整重现了"缝宽与衍射展宽成反比"的物理规律。
-
-#### 图 9 · `eval_results/sweep_circle_radius.png` —— 圆孔半径参数扫描
-
-
-由 `evaluate.py::sweep_circle_radius()` 生成，2×8：半径 $r\in\{5,10,15,20,30,40,55,70\}$ 的预测图样与中心剖面。
-
-**读图要点**：小孔给出舒展的艾里斑与清晰同心环，随半径增大，中央亮斑收缩、环间距变小，符合艾里斑第一暗环半径 $\propto 1/r$ 的理论预期。
-
-#### 图 10 · `eval_results/sweep_grating_period.png` —— 光栅周期参数扫描
-
-
-由 `evaluate.py::sweep_grating_period()` 生成，2×8：周期 $p\in\{6,10,14,18,24,32,48,64\}$ 的预测图样与中心剖面。
-
-**读图要点**：光栅周期越大，相邻衍射级次的间距越小、级次越密集；周期越小级次分得越开。这与光栅方程 $d\sin\theta=m\lambda$ 的规律一致。
-
-### 3.10 阶段一产出物
-
-- 正向模型与基线权重：`best_model.pt`、`baseline_model.pt`；
-- 训练可视化：`train_result.png`（图 1）、`loss_curve.png`（图 2）、`baseline_loss_curve.png`（图 3）；
-- 评估结果：`eval_results/`（图 4–10，及 `metrics.txt`）；
-- 对比结果：`comparison/`（`side_by_side.png`、`mae_distribution.png`、`per_sample.png`、`metrics.txt`）；
-- 跨届对比：`compare_result.png`、`compare_curve.png`。
-
----
-
-## 四、阶段二：逆向预测（衍射 → 光阑）
-
-> 📝 **预留区域，待填写。**
-
-- 搭建逆网络 $G_\phi$：输入 1 通道衍射图样，输出 1 通道光阑（可复用 U-Net 骨干）；
-- 用正向网络闭环约束：$\hat I = \Phi_{\text{phys}}(G_\phi(I))$，以 $\mathcal L(\hat I, I)$ 反向传播校正 $G_\phi$（正向网络冻结或联合微调）；
-- 引入额外先验/正则（光阑二值化、总变差、稀疏性）以缓解相位恢复的多解问题；
-- 评价：光阑重建的 IoU / 像素准确率 / 边缘匹配，以及"重建光阑再正向衍射"的一致性误差。
-
-
----
-
-## 五、阶段三：双向网络与鲁棒性
-
-> 📝 **预留区域，待填写。**
-
-
-- 将正、逆网络联合成一个完整的**双向**预测系统，联合优化；
-- 在**不同数据集**上训练/测试，考察跨集泛化能力；
-- 在**存在外界干扰（如毛玻璃）**的条件下仍保持低误差。
-
----
-
-## 六、运行说明
-
-### 6.1 环境依赖
-
-```
-python >= 3.9
-torch, numpy, matplotlib
-tqdm                              # compare_with_last_year.py 需要
-torchmetrics 或 pytorch-msssim    # 可选：启用 SSIM 项
-```
-
-> 注意：本项目在 Python 3.14 环境下会因 PyTorch 暂无对应 wheel 而无法运行，请使用 Python ≤ 3.13 并安装上述依赖。
-
-### 6.2 运行步骤
+在项目根目录运行。先按[PyTorch官方说明](https://pytorch.org/get-started/locally/)选择适合CPU/GPU的安装版本，再安装依赖：
 
 ```bash
-# 1) 生成数据（约几分钟，视机器而定） —— 首次运行必须执行
-python generate_data.py
-
-# 2) 训练正向网络（物理引导残差模型）
-python train.py
-
-# 3) 评估正向网络
-python evaluate.py                       # 默认读取 data/ 与 best_model.pt
-python evaluate.py --skip_sweep          # 跳过参数扫描可加速
-
-# 4) 训练无物理先验的基线并做对比
-python baseline.py all                   # = train + compare
-#   或分开：python baseline.py train / python baseline.py compare
-
-# 5) 与去年队伍的 pix2pix 方案在同一数据/划分下对比
-python compare_with_last_year.py
-#   首次运行会先训练去年方案（若已存在 pix2pix_last_year.pt 则直接加载）
+python -m pip install -r requirements.txt
+python -m unittest fresnel_experiment.test_pipeline fresnel_experiment.test_rs1_audit -v
 ```
 
-数据生成完成后，建议先看 `data/preview_sanity.png`（物理正确性：圆孔应为艾里斑、光栅应为分立级次）与 `data/preview_strategy.png`（数据多样性），确认无误再训练。
+本机通过11项测试。实测环境：Python 3.11.16、NumPy 1.23.5、Matplotlib 3.7.2、PyTorch 2.14.0+cu130，RTX 5070 Laptop GPU；详见[环境记录](docs/phase1_results/environment.json)。CUDA版本需按自己的设备选择，程序会实际探测计算能力。
 
-### 6.3 文件结构
+小规模流程检查（64×64、24个输入，每组每模型1轮）：
 
+```bash
+python -m fresnel_experiment.validate --grid 64 --out fresnel_checks/demo
+python -m fresnel_experiment.generate --grid 64 --samples 24 --validation fresnel_checks/demo/validation.json --out fresnel_data/demo
+python -m fresnel_experiment.train --data fresnel_data/demo --base-ch 8 --batch-size 4 --epochs 1 --out fresnel_runs/demo
 ```
+
+小网格用于验证流程，不能作为正式性能结论。所有输出目录必须不存在；再次运行须换新名称。
+
+## 完整复现本次实验
+
+仓库只提供轻量结果，原始数据及权重需要重新生成。以下目录使用新的reproduce名称，避免覆盖维护者已有结果；正式数据约占4.2 GB。
+
+```bash
+# 1. 传播验证、生成1000个原始光阑及七组标签
+python -m fresnel_experiment.validate --out fresnel_checks/reproduce_v1
+python -m fresnel_experiment.generate --samples 1000 --validation fresnel_checks/reproduce_v1/validation.json --out fresnel_data/reproduce_v1
+
+# 2. 原夫琅禾费＋残差与基线：七组分别训练50轮
+python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --epochs 50 --out fresnel_runs/reproduce_fft
+
+# 3. 同一数据上的纯角谱及冻结模型参照
+python -m fresnel_experiment.reference --data fresnel_data/reproduce_v1 --compare-run fresnel_runs/reproduce_fft --out fresnel_reference/reproduce_v1
+
+# 4. 重点两组角谱残差：各10轮
+python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --out fresnel_runs/reproduce_asm
+
+# 5. 独立RS1验证：新光阑，不更新权重
+python -m fresnel_experiment.rs1_audit --data fresnel_data/reproduce_v1 --old-run fresnel_runs/reproduce_fft --asm-run fresnel_runs/reproduce_asm --out fresnel_checks/reproduce_rs1
+```
+
+设备默认为auto；可显式选择`--device cuda`或`--device cpu`。CPU也可运行，耗时取决于设备。不同软硬件和浮点计算可能产生数值差异。
+
+训练控制台和`history.csv`记录每轮训练、验证及累计时间；模型与运行目录另存`timing.json`和`timing_summary.csv`。GPU计时在边界同步，旧训练未记录的耗时不会补填。
+
+## 上传代码与目录结构
+
+```text
 Aperture-Diffraction/
-├── generate_data.py           # 数据生成：光阑形状库 + 夫琅禾费衍射模拟
-├── train.py                   # 阶段一：物理层 + 残差 U-Net + 损失 + 训练
-├── evaluate.py                # 阶段一评估：指标、可视化、极端测试、参数扫描
-├── baseline.py                # 阶段一基线（无物理层）+ 对比实验
-├── compare_with_last_year.py  # 与去年队伍 pix2pix 方案的对比脚本
-├── best_model.pt              # 阶段一正向模型权重
-├── baseline_model.pt          # 基线模型权重
-├── train_result.png           # 正向模型预测可视化（图 1）
-├── loss_curve.png             # 正向训练 loss 曲线（图 2）
-├── baseline_loss_curve.png    # 基线训练曲线（图 3）
-├── compare_result.png         # 今年 vs 去年 pix2pix 定性对比
-├── compare_curve.png          # 去年 pix2pix 训练曲线
-├── 阶段一汇报.pptx             # 阶段一汇报演示文稿
-├── eval_results/              # evaluate.py 输出（图 4–10 + metrics.txt）
-├── comparison/                # baseline 对比输出（对比图 + metrics.txt）
-├── docs/
-│   └── README_完整备份_2026-10-08.md   # 重构前的完整版备份
-└── data/                      # generate_data.py 输出（运行后生成）
+  README.md, requirements.txt, .gitignore
+  generate_data.py            # 复用八类几何；导入不创建旧data目录
+  train.py                   # 保留旧模型/损失；新模块复用ConvBlock、Loss
+  baseline.py, evaluate.py    # 早期实验入口
+  fresnel_experiment/         # 多NF数据、模型、训练、参照、RS1与测试
+  docs/
+    PHASE1_CHECKPOINT.md      # 当前公开检查点
+    UPLOAD_GUIDE.md           # 上传清单、依赖及排除项
+    legacy_far_field.md      # 早期实验及解释修正
+    phase1_results/          # 轻量CSV/JSON/图及来源哈希
 ```
 
----
+完整数据、权重、工作目录和本机审计快照由`.gitignore`排除，所需展示材料另存`docs/phase1_results/`。保留根目录`train.py`和`generate_data.py`，新模块仍依赖它们。详细上传文件见[清单](docs/UPLOAD_GUIDE.md)。
 
-## 七、引用与说明
+## 后续工作
 
-- 数据与标签均由 `generate_data.py` 的物理模型仿真产生，非真实实验采集；
-- 物理层与数据生成必须保持参数一致（尤其 `LOG_ALPHA`、`fftshift` 顺序、归一化方式），`train.py` 已内置一致性自检；
-- 重构前的完整版（含已删除的"专题对比"章节）见 `docs/README_完整备份_2026-10-08.md`；
-- 本项目用于普通物理实验 II 的深度学习探究与教学演示。
+| 内容 | 状态 |
+|---|---|
+| 多NF理想正向预测、换层与收益归因 | 已完成 |
+| 固定可重复系统偏差下的校准与残差对照 | 待开展 |
+| 逆向光阑重建 | 待开展 |
+| 含噪、毛玻璃等干扰下的双向系统 | 待开展 |
+
+当前结论限于理想标量仿真和已检查的样本、观察点。独立随机观测噪声不能由理想光阑逐次预测；后续残差研究需要明确可学习的系统偏差。早期远场流程和历史指标见[历史实验说明](docs/legacy_far_field.md)。

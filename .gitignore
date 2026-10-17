@@ -1,0 +1,31 @@
+# Python and editor files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.vscode/
+
+# Generated arrays and model weights (keep selected figures/CSV under docs/)
+*.npy
+*.npz
+*.pt
+*.pth
+*.ckpt
+/data/
+/fresnel_data/
+/fresnel_runs/
+/fresnel_checks/
+/fresnel_reference/
+/fresnel_analysis/
+/eval_results/
+/comparison/
+
+# Local provenance records contain machine-specific paths
+/change_protection/
+/checkpoints/
+/publish_checks/
+/fresnel_experiment/legacy_artifacts_before.json
+/fresnel_experiment/verification.json
+/fresnel_experiment/IMPLEMENTATION_REPORT.md
+/fresnel_experiment/ASM_TIMING_REPORT.md
