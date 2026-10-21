@@ -465,6 +465,8 @@ python -m unittest tests.test_physics -v
 | `python -m aperture.train` | 训练 physics / baseline；可先 `--dry-run` |
 | `python -m aperture.evaluate` | 纯物理参照与冻结模型对比；加 `--rs1` 做独立审计 |
 
+三种等价写法：在项目根目录用 `python -m aperture.generate`；或用统一入口 `python -m aperture generate`；也可以直接运行 `python aperture/generate.py`（脚本会自动切回项目根目录，任意位置都能跑）。
+
 #### 1. 生成数据
 
 ```bash

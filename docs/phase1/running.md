@@ -8,6 +8,8 @@
 | `python -m aperture.train` | 训练 physics / baseline 模型 |
 | `python -m aperture.evaluate` | 纯物理参照、模型对比；加 `--rs1` 做独立审计 |
 
+三种等价写法：`python -m aperture.generate`（项目根目录）、`python -m aperture generate`（统一入口）、`python aperture/generate.py`（直接运行，会自动切回项目根目录）。
+
 ## 1. 生成数据
 
 ```bash

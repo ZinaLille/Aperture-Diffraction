@@ -4,6 +4,17 @@ Usage:
     python -m aperture.train --data data/forward/v1 --out runs/forward/all_v1
     python -m aperture.train --data data/forward/v1 --dry-run
 """
+
+import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    # Allow `python aperture/generate.py` and similar direct runs.
+    _ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(_ROOT))
+    os.chdir(_ROOT)
+
 import argparse
 import csv
 import random
@@ -19,10 +30,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .models import ForwardModel, FraunhoferDetectorLayer, Loss
-from .physics import (PhysicsConfig, AngularSpectrumDetectorLayer,
+from aperture.models import ForwardModel, FraunhoferDetectorLayer, Loss
+from aperture.physics import (PhysicsConfig, AngularSpectrumDetectorLayer,
                       angular_spectrum_raw, postprocess, image_metrics)
-from .utils import (new_output, read_json, write_json, sha256,
+from aperture.utils import (new_output, read_json, write_json, sha256,
                     StageTimer, synchronize, duration, utc_now)
 
 class GroupData(Dataset):

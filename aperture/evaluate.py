@@ -5,6 +5,17 @@ Usage:
     python -m aperture.evaluate --rs1 --data data/forward/v1 --run runs/forward/all_v1 \
         --asm-run runs/forward/asm_nf3_nf5_e10_v1 --out results/forward/rs1_v1
 """
+
+import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    # Allow `python aperture/generate.py` and similar direct runs.
+    _ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(_ROOT))
+    os.chdir(_ROOT)
+
 import argparse
 import hashlib
 import sys
@@ -19,14 +30,14 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .apertures import STRATEGIES, make_aperture
-from .models import ForwardModel, FraunhoferDetectorLayer
-from .physics import (PhysicsConfig, AngularSpectrumDetectorLayer,
+from aperture.apertures import STRATEGIES, make_aperture
+from aperture.models import ForwardModel, FraunhoferDetectorLayer
+from aperture.physics import (PhysicsConfig, AngularSpectrumDetectorLayer,
                       check_nf, group_name, geometry, postprocess, image_metrics,
                       fraunhofer_raw, angular_spectrum_raw,
                       rayleigh_sommerfeld_points)
-from .train import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
-from .utils import (new_output, read_json, write_json, sha256,
+from aperture.train import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
+from aperture.utils import (new_output, read_json, write_json, sha256,
                     StageTimer, synchronize, duration, utc_now)
 
 

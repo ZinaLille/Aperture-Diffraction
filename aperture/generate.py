@@ -6,6 +6,17 @@ Usage:
 Propagation is validated internally before any training array is written; the
 report is stored as ``validation.json`` inside the output directory.
 """
+
+import os
+import sys
+from pathlib import Path
+
+if __package__ in (None, ""):
+    # Allow `python aperture/generate.py` and similar direct runs.
+    _ROOT = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(_ROOT))
+    os.chdir(_ROOT)
+
 import argparse
 import csv
 from dataclasses import replace
@@ -16,11 +27,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .apertures import STRATEGIES, make_aperture, split_ids
-from .physics import (PhysicsConfig, DEFAULT_NF, check_nf, group_name, geometry, postprocess,
+from aperture.apertures import STRATEGIES, make_aperture, split_ids
+from aperture.physics import (PhysicsConfig, DEFAULT_NF, check_nf, group_name, geometry, postprocess,
                       fraunhofer_raw, angular_spectrum_raw,
                       rayleigh_sommerfeld_points, image_metrics)
-from .utils import new_output, write_json, sha256
+from aperture.utils import new_output, write_json, sha256
 
 def standard_apertures(n):
     yy, xx = np.indices((n, n))

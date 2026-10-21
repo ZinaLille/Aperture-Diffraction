@@ -38,7 +38,9 @@ def ensure_parent(path):
 
 def new_output(path):
     path = Path(path).resolve()
-    path.mkdir(parents=True, exist_ok=False)
+    if path.exists():
+        raise FileExistsError(f"Output directory already exists: {path}; choose a new --out name")
+    path.mkdir(parents=True)
     return path
 
 
