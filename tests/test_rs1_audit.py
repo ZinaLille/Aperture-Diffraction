@@ -1,8 +1,8 @@
 """Checks for independent-reference sampling, scaling and convergence."""
 import unittest
 import numpy as np
-from .rs1_audit import detector_indices, physical_metrics, integrate_reference, fraunhofer_cell_raw
-from .physics import PhysicsConfig, geometry
+from src.forward.rs1_audit import detector_indices, physical_metrics, integrate_reference, fraunhofer_cell_raw
+from src.common.physics import PhysicsConfig, geometry
 
 
 class AuditTests(unittest.TestCase):

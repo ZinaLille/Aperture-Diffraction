@@ -23,16 +23,16 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 
-from paths import ensure_parent, out_path, run_path
+from src.common.paths import data_dir, ensure_parent, results_dir, run_dir
 
 
 # ============================================================
 # 配置
 # ============================================================
-DATA_DIR = 'data'
-SAVE_PATH = run_path('best_model.pt')       # 权重放在 run/
-HISTORY_PATH = run_path('history.csv')      # 逐轮损失记录放在 run/
-RESULT_PATH = out_path('train_result.png')  # 图片放在 out/
+DATA_DIR = data_dir('forward', 'legacy')
+SAVE_PATH = run_dir('forward', 'legacy', 'best_model.pt')
+HISTORY_PATH = run_dir('forward', 'legacy', 'history.csv')
+RESULT_PATH = results_dir('forward', 'legacy', 'train_result.png')
 
 BATCH_SIZE = 32
 EPOCHS = 50
@@ -612,7 +612,7 @@ def main():
 
     # ---------- Loss 曲线 ----------
     # ⬇️ 改 5: 传入新的 history 字典 (见下方新 plot_loss_curve)
-    plot_loss_curve(history, save_path=out_path('loss_curve.png'))
+    plot_loss_curve(history, save_path=results_dir('forward', 'legacy', 'loss_curve.png'))
     
     # ---------- 加载最佳模型并可视化 ----------
     model.load_state_dict(torch.load(SAVE_PATH, map_location=DEVICE))

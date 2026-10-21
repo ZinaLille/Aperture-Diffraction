@@ -4,7 +4,7 @@
 
 > 用「可微的物理模型 + 神经网络」研究 **光阑形状 ↔ 衍射图样** 的双向映射，分三个阶段推进。
 >
-> **当前进度（2026-10-17）**：阶段一已完成远场实验、多菲涅耳数对照、角谱物理层替换与独立积分验证；阶段二、三尚未开展。
+> **当前进度（2026-10-21）**：阶段一已完成远场实验、多菲涅耳数对照、角谱物理层替换与独立积分验证；阶段二已建立代码骨架，正在搭建逆向网络。
 
 ---
 
@@ -15,7 +15,7 @@
 | 阶段 | 目标 | 关键方法 | 状态 |
 |------|------|----------|------|
 | **阶段一** | 正向预测：输入光阑与传播条件，输出衍射图样；判断物理层和网络分别带来多少收益 | 可微传播层 + 残差 U-Net；多菲涅耳数对照；独立 RS1 积分验证 | ✅ 已完成当前理想仿真实验 |
-| **阶段二** | 逆向预测：输入衍射图样，恢复光阑形状 | 逆网络 + 可微正向约束，结合光阑监督与先验 | ⏳ 待开展 |
+| **阶段二** | 逆向预测：输入衍射图样，恢复光阑形状 | 逆网络 + 可微正向约束，结合光阑监督与先验 | 🚧 进行中（骨架已建） |
 | **阶段三** | 构建双向预测系统，研究跨数据集及外界干扰下的鲁棒性 | 正逆向联合训练、系统偏差与干扰建模 | ⏳ 待开展 |
 
 本次新增的多菲涅耳数、角谱换层和独立积分检查，均属于**阶段一的扩展与验证**，不代表已经进入逆向重建或含噪双向预测。
@@ -26,10 +26,12 @@
 |------|------|------|
 | 二 | 理论基础：数据表示、菲涅耳数、传播模型与可微物理层 | 已填写 |
 | **三** | **阶段一：数据、网络、损失、训练、结果及图表解读** | ✅ 已填写 |
-| 四 | 阶段二：逆向预测 | 📝 预留区域 |
+| 四 | 阶段二：逆向预测 | 🚧 进行中（骨架已建） |
 | 五 | 阶段三：双向网络与鲁棒性 | 📝 预留区域 |
 | 六 | 运行说明：环境、复现步骤、文件结构 | 已填写 |
 | 七 | 资料索引与说明 | 已填写 |
+
+> 文字文档按阶段放在 `docs/phase1/` 与 `docs/phase2/`；代码入口说明见 `src/forward/README.md` 与 `src/inverse/README.md`。
 
 ### 1.3 实现目的
 
@@ -159,7 +161,7 @@ $$
 
 ## 三、阶段一：正向预测（光阑 → 衍射）✅ 已完成当前实验
 
-> 本章记录从早期远场实验到多菲涅耳数、角谱换层和独立 RS1 验证的完整主线。详细结果记录见[阶段结果记录](docs/phase1_results/README.md)，完成范围见[阶段检查点](docs/PHASE1_CHECKPOINT.md)。
+> 本章记录从早期远场实验到多菲涅耳数、角谱换层和独立 RS1 验证的完整主线。详细结果记录见[阶段结果记录](docs/phase1/README.md)，完成范围见[阶段检查点](docs/phase1/CHECKPOINT.md)。
 
 ### 3.1 阶段目标与实验顺序
 
@@ -173,7 +175,7 @@ $$
 
 ### 3.2 光阑生成：八种几何策略
 
-形状库来自根目录 `generate_data.py`，多菲涅耳数入口由 `fresnel_experiment/apertures.py` 复用并组织。
+形状库定义在 `legacy/generate_data.py`，多菲涅耳数入口由 `src/common/apertures.py` 复用并组织。
 
 | 策略 | 内容 | 主要变化 |
 |------|------|----------|
@@ -226,7 +228,7 @@ apertures.npy[i]  +  nf_3/metadata.json 中的第 i 条传播信息
 
 ### 3.4 正向模型与基线
 
-当前模型定义位于 `fresnel_experiment/models.py`，复用根目录 `train.py` 的卷积块。
+当前模型定义位于 `src/forward/models.py`，卷积块与损失来自 `src/common/nets.py`。
 
 ```text
 光阑 a ─────────► 固定可微传播层 Φ(a, z) ─────► I_sim ─────────┐
@@ -254,7 +256,7 @@ apertures.npy[i]  +  nf_3/metadata.json 中的第 i 条传播信息
 
 ### 3.5 损失函数
 
-复用 `train.py::Loss`，当前多菲涅耳数实验采用：
+复用 `src/common/nets.py::Loss`，当前多菲涅耳数实验采用：
 
 $$
 \mathcal L=\underbrace{\|\hat I-I\|_1}_{\text{空间 L1}}
@@ -375,7 +377,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 原始逐例数据不随仓库发布。$N_F=3,5$ 的 48 例改善均超过参考末次平均加密变化的 5 倍；这是数值判别规则，不是严格误差界或统计显著性检验。
 
-冻结旧残差网络后，在新光阑上的**辅助图样比较**中，$N_F=3,5$ 的平均误差分别降低 26.32%、32.14%。这支持旧网络可以补偿部分夫琅禾费近似误差；该辅助指标涉及图样归一化，不能用来论证绝对强度精度。详见[网络辅助比较](docs/phase1_results/README.md)与[RS1 方法说明](fresnel_experiment/RS1_AUDIT_README.md)。
+冻结旧残差网络后，在新光阑上的**辅助图样比较**中，$N_F=3,5$ 的平均误差分别降低 26.32%、32.14%。这支持旧网络可以补偿部分夫琅禾费近似误差；该辅助指标涉及图样归一化，不能用来论证绝对强度精度。详见[网络辅助比较](docs/phase1/README.md)与[RS1 方法说明](src/forward/RS1_AUDIT_README.md)。
 
 ### 3.10 阶段结论与适用范围
 
@@ -388,7 +390,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 ### 3.11 结果图说明
 
-所有图片都不随仓库发布。按 6.2 节复现后，新图会写入本地 `fresnel_runs/`，早期远场脚本的图写入 `out/`；维护者本机的历史公开图归档在 `reports/phase1_results/`。下表仍按文件名说明各图内容，便于日后对照；历史图与当前图使用不同实验配置，应分别解读。
+所有图片都不随仓库发布。按 6.2 节复现后，新图会写入本地 `runs/forward/`，早期远场脚本的图写入 `results/forward/legacy/`；维护者本机的历史公开图归档在 `reports/phase1/results/`。下表仍按文件名说明各图内容，便于日后对照；历史图与当前图使用不同实验配置，应分别解读。
 
 | 图 | 文件名 | 读图要点 |
 |----|--------|----------|
@@ -399,7 +401,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 | **图 5 · NF=5 八类示例** | `rs1_nf5_examples.png` | 同时查看光阑和图样；右栏横轴是观察点编号，并非空间剖面，Fraunhofer 曲线为原点采样 FFT |
 | **历史图 · 正向与基线训练** | `train_result.png`、`loss_curve.png`、`baseline_loss_curve.png` | 展示早期远场实验，不能替代当前多 $N_F$ 结果或证明新增网络收益 |
 
-逐样本指标、CSV/JSON 与其余图表同样不随仓库发布；文字结论与表格见[阶段结果记录](docs/phase1_results/README.md)。
+逐样本指标、CSV/JSON 与其余图表同样不随仓库发布；文字结论与表格见[阶段结果记录](docs/phase1/README.md)。
 
 ### 3.12 阶段一产出物
 
@@ -409,14 +411,14 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 | 训练 | 每组纯物理参照、epoch0 指标、最佳权重、选优轮次、测试逐样本指标 |
 | 可视化 | 学习曲线、验证样例、分组对比和独立传播检查图 |
 | 时间统计 | 逐轮、单模型、分组及整次运行耗时 |
-| 结果记录 | 指标表与结论见 README 与 `docs/phase1_results/`；CSV/JSON/PNG 不随仓库发布 |
-| 状态记录 | [公开阶段检查点](docs/PHASE1_CHECKPOINT.md)；检查点记录了 11 项测试通过及原有结果保护核验 |
+| 结果记录 | 指标表与结论见 README 与 `docs/phase1/`；CSV/JSON/PNG 不随仓库发布 |
+| 状态记录 | [公开阶段检查点](docs/phase1/CHECKPOINT.md)；检查点记录了 11 项测试通过及原有结果保护核验 |
 
 ---
 
 ## 四、阶段二：逆向预测（衍射 → 光阑）
 
-> 📝 **预留区域，尚未开展。** 以下是后续研究方向，不是已经完成的实验。
+> 🚧 **进行中。** 代码骨架已建立在 `src/inverse/`，数据契约与评估口径见[阶段二说明](docs/phase2/README.md)；目前尚无训练结果。
 
 - 搭建逆网络 $G_\phi$，输入衍射图样及已知传播条件，输出光阑预测 $\hat a$。
 - 将 $\hat a$ 送入固定、可微的正向传播层，约束重建图样与观测一致。
@@ -444,12 +446,12 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 ```bash
 python -m pip install -r requirements.txt
-python -m unittest fresnel_experiment.test_pipeline fresnel_experiment.test_rs1_audit -v
+python -m unittest tests.test_pipeline tests.test_rs1_audit -v
 ```
 
 本次记录的实验环境为 Python 3.11.16、PyTorch 2.14.0+cu130、NumPy 1.23.5、Matplotlib 3.7.2，GPU 为 RTX 5070 Laptop GPU。它是维护者的实测记录，不是所有设备必须照搬的版本组合；原始环境记录不随仓库发布。
 
-以下命令均在**项目根目录**运行，即包含 `fresnel_experiment/` 的目录。设备默认 `auto`，也可显式添加 `--device cuda` 或 `--device cpu`。训练入口会实际探测 CUDA 计算能力。
+以下命令均在**项目根目录**运行，即包含 `src/forward/` 的目录。设备默认 `auto`，也可显式添加 `--device cuda` 或 `--device cpu`。训练入口会实际探测 CUDA 计算能力。
 
 > 所有新实验的输出根目录必须不存在。再次运行请更换输出名称，以保留已有数据和训练结果。1000 个 $256\times256$ 原始光阑对应的全部新数据数组约占 4.2 GB。
 
@@ -458,7 +460,7 @@ python -m unittest fresnel_experiment.test_pipeline fresnel_experiment.test_rs1_
 #### 第一步：传播验证
 
 ```bash
-python -m fresnel_experiment.validate --out fresnel_checks/reproduce_v1
+python -m src.forward.validate --out results/forward/checks/reproduce_v1
 ```
 
 生成传播自检、补零 / 加密检查和独立积分抽查的报告。数据生成器只接受通过检查且物理配置匹配的报告。
@@ -466,7 +468,7 @@ python -m fresnel_experiment.validate --out fresnel_checks/reproduce_v1
 #### 第二步：生成共享光阑与七组标签
 
 ```bash
-python -m fresnel_experiment.generate --samples 1000 --validation fresnel_checks/reproduce_v1/validation.json --out fresnel_data/reproduce_v1
+python -m src.forward.generate --samples 1000 --validation results/forward/checks/reproduce_v1/validation.json --out data/forward/reproduce_v1
 ```
 
 `--samples` 指原始光阑数，每一组都有同样数量的样本。输入、标签和元数据的对应方式见 3.3 节。
@@ -474,7 +476,7 @@ python -m fresnel_experiment.generate --samples 1000 --validation fresnel_checks
 #### 第三步：训练前只读检查
 
 ```bash
-python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --dry-run
+python -m src.forward.train --data data/forward/reproduce_v1 --dry-run
 ```
 
 检查文件身份、划分、前向计算和零残差初始化。`--dry-run` 不训练、不创建运行输出目录；旧物理层与近场标签存在差异会如实报告，不会因此强行中止实验。
@@ -483,10 +485,10 @@ python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --dry-run
 
 ```bash
 # 可先运行 NF=1 一组
-python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --groups 1 --epochs 50 --out fresnel_runs/reproduce_nf1
+python -m src.forward.train --data data/forward/reproduce_v1 --groups 1 --epochs 50 --out runs/forward/reproduce_nf1
 
 # 七组分别训练物理残差模型与纯网络基线
-python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --epochs 50 --out fresnel_runs/reproduce_fft
+python -m src.forward.train --data data/forward/reproduce_v1 --epochs 50 --out runs/forward/reproduce_fft
 ```
 
 两条命令是独立运行。第一条可用于先熟悉训练流程；第二条生成后续完整对照所需的七组权重。
@@ -494,7 +496,7 @@ python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --epochs 50 
 #### 第五步：加入纯角谱与冻结模型参照
 
 ```bash
-python -m fresnel_experiment.reference --data fresnel_data/reproduce_v1 --compare-run fresnel_runs/reproduce_fft --out fresnel_reference/reproduce_v1
+python -m src.forward.reference --data data/forward/reproduce_v1 --compare-run runs/forward/reproduce_fft --out results/forward/reference/reproduce_v1
 ```
 
 只读数据与已有最佳权重，不更新模型。默认角谱参照使用双精度；与单精度神经网络比较速度时，需要注意精度和计时范围的差别。
@@ -502,7 +504,7 @@ python -m fresnel_experiment.reference --data fresnel_data/reproduce_v1 --compar
 #### 第六步：重点两组的角谱残差训练
 
 ```bash
-python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --out fresnel_runs/reproduce_asm
+python -m src.forward.train --data data/forward/reproduce_v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --out runs/forward/reproduce_asm
 ```
 
 这是复现换层对照的配置，并不意味着当前结果需要自动增加训练轮数。请结合 `initial_val.json`、`selection.json` 和学习曲线判断是否超过 epoch0。
@@ -510,93 +512,102 @@ python -m fresnel_experiment.train --data fresnel_data/reproduce_v1 --groups 3 5
 #### 第七步：独立 RS1 验证
 
 ```bash
-python -m fresnel_experiment.rs1_audit --data fresnel_data/reproduce_v1 --old-run fresnel_runs/reproduce_fft --asm-run fresnel_runs/reproduce_asm --out fresnel_checks/reproduce_rs1
+python -m src.forward.rs1_audit --data data/forward/reproduce_v1 --old-run runs/forward/reproduce_fft --asm-run runs/forward/reproduce_asm --out results/forward/checks/reproduce_rs1
 ```
 
-生成新光阑，冻结网络，仅进行独立传播与收敛检查。三个输入路径必须对应前面实际生成的数据和运行目录。完整参数说明见[多菲涅耳数运行文档](fresnel_experiment/README.md)与[RS1 验证说明](fresnel_experiment/RS1_AUDIT_README.md)。
+生成新光阑，冻结网络，仅进行独立传播与收敛检查。三个输入路径必须对应前面实际生成的数据和运行目录。完整参数说明见[多菲涅耳数运行文档](src/forward/README.md)与[RS1 验证说明](src/forward/RS1_AUDIT_README.md)。
 
 ### 6.3 小规模流程检查
 
 如需先确认环境和入口可运行，可使用 64×64 网格、24 个原始光阑，每组每模型训练 1 轮：
 
 ```bash
-python -m fresnel_experiment.validate --grid 64 --out fresnel_checks/demo
-python -m fresnel_experiment.generate --grid 64 --samples 24 --validation fresnel_checks/demo/validation.json --out fresnel_data/demo
-python -m fresnel_experiment.train --data fresnel_data/demo --base-ch 8 --batch-size 4 --epochs 1 --out fresnel_runs/demo
+python -m src.forward.validate --grid 64 --out results/forward/checks/demo
+python -m src.forward.generate --grid 64 --samples 24 --validation results/forward/checks/demo/validation.json --out data/forward/demo
+python -m src.forward.train --data data/forward/demo --base-ch 8 --batch-size 4 --epochs 1 --out runs/forward/demo
 ```
 
 小网格可能改变几何细节，只用于检查流程，不能作为正式模型性能结论。
 
 ### 6.4 早期远场脚本
 
-根目录旧入口仍保留，默认从 `data/` 读数据，把权重写入 `run/`、把图片与评估结果写入 `out/`：
+早期脚本已移入 `legacy/`，用模块方式从项目根目录运行；默认从 `data/forward/legacy/` 读数据，把权重写入 `runs/forward/legacy/`，把图片与评估结果写入 `results/forward/legacy/`：
 
 ```bash
-python generate_data.py     # 生成 data/（输入数据，不提交）
-python train.py             # 权重 -> run/，曲线与可视化 -> out/
-python evaluate.py          # 评估图与指标 -> out/eval_results/
-python baseline.py all      # 基线权重 -> run/，对比结果 -> out/comparison/
+python -m legacy.generate_data   # 生成 data/forward/legacy/
+python -m legacy.train           # 权重 -> runs/forward/legacy/，曲线与可视化 -> results/forward/legacy/
+python -m legacy.evaluate        # 评估图与指标 -> results/forward/legacy/eval_results/
+python -m legacy.baseline all    # 基线权重 -> runs/forward/legacy/，对比结果 -> results/forward/legacy/comparison/
 ```
 
-已有旧结果的工作区不要直接用这组默认命令重新生成、训练；当前多菲涅耳数复现使用 6.2 节的新入口和新目录。旧实验的配置及解释修正见[历史远场实验说明](docs/legacy_far_field.md)。
+已有旧结果的工作区不要直接用这组默认命令重新生成、训练；当前多菲涅耳数复现使用 6.2 节的新入口和新目录。旧实验的配置及解释修正见[历史远场实验说明](docs/phase1/legacy_far_field.md)。
 
 ### 6.5 文件结构
 
 ```text
 Aperture-Diffraction/
-├── README.md                       # 项目总览、原理、阶段结果与运行说明
+├── README.md                       # 项目总览、三阶段状态与导航
 ├── requirements.txt                # 核心依赖
 ├── .gitignore                      # 只提交源码与 Markdown
-├── paths.py                        # run/ 与 out/ 的路径约定
-├── generate_data.py                # 早期生成器与八类几何函数
-├── train.py                        # 早期物理模型；新模块复用 ConvBlock、Loss
-├── baseline.py                     # 早期纯网络基线及对比
-├── evaluate.py                     # 早期指标、可视化与参数扫描
-├── compare_with_last_year.py       # 历史 pix2pix 对照
-├── fresnel_experiment/
-│   ├── apertures.py                # 八类光阑、共享 ID 划分
-│   ├── physics.py                  # NumPy 传播、物理坐标、指标及 RS1 积分
-│   ├── torch_physics.py            # 可微角谱层
-│   ├── models.py                   # 条件 U-Net、物理残差模型和基线
-│   ├── validate.py / generate.py   # 传播检查与分组数据生成
-│   ├── train.py                    # 分组训练、epoch0 选优、测试与绘图
-│   ├── reference.py                # 纯角谱和冻结模型参照
-│   ├── rs1_audit.py                # 新光阑上的独立积分验证
-│   ├── timing.py / io_utils.py     # 计时、独占新目录与文件工具
-│   ├── test_pipeline.py            # 数据与传播流程测试
-│   └── test_rs1_audit.py           # 独立积分相关测试
-├── docs/
-│   ├── PHASE1_CHECKPOINT.md        # 当前阶段检查点
-│   ├── legacy_far_field.md         # 历史实验与解释修正
-│   └── phase1_results/README.md    # 阶段一文字结果与指标表
-├── run/                            # 本机：权重与训练记录（不提交）
-├── out/                            # 本机：图片、指标与评估结果（不提交）
-└── reports/                        # 本机：阶段汇报、归档结果（不提交）
+├── src/
+│   ├── common/                     # 两阶段共用
+│   │   ├── apertures.py            # 八类光阑、共享 ID 划分
+│   │   ├── physics.py              # NumPy 传播、物理坐标、指标及 RS1 积分
+│   │   ├── torch_physics.py        # 可微角谱层
+│   │   ├── nets.py                 # ConvBlock 与损失函数
+│   │   ├── paths.py                # data/runs/results 的路径约定
+│   │   ├── io_utils.py
+│   │   └── timing.py
+│   ├── forward/                    # 阶段一：正向
+│   │   ├── validate.py / generate.py   # 传播检查与分组数据生成
+│   │   ├── train.py                    # 分组训练、epoch0 选优、测试与绘图
+│   │   ├── reference.py                # 纯角谱和冻结模型参照
+│   │   ├── rs1_audit.py                # 新光阑上的独立积分验证
+│   │   ├── models.py                   # 条件 U-Net、物理残差模型和基线
+│   │   └── README.md / RS1_AUDIT_README.md
+│   └── inverse/                    # 阶段二：逆向（骨架）
+│       ├── __init__.py
+│       └── README.md
+├── legacy/                         # 早期远场脚本（阶段一前身）
+│   ├── generate_data.py / train.py / baseline.py / evaluate.py
+│   └── compare_with_last_year.py
+├── tests/                          # test_pipeline.py / test_rs1_audit.py
+├── docs/                           # 随仓库发布的文字文档
+│   ├── phase1/                     # README.md、CHECKPOINT.md、legacy_far_field.md
+│   └── phase2/README.md
+├── data/                           # 本机：forward/、inverse/（不提交）
+├── runs/                           # 本机：各阶段权重与训练记录（不提交）
+├── results/                        # 本机：各阶段图表与评估结果（不提交）
+└── reports/                        # 本机：阶段汇报与归档（不提交）
 ```
 
 ### 6.6 本地目录约定
 
 | 目录 | 内容 | 是否进入 Git |
 |------|------|--------------|
-| `data/` | `generate_data.py` 生成的输入数组 | 否 |
-| `run/` | `best_model.pt`、`baseline_model.pt`、`history.csv` 等权重与训练记录 | 否 |
-| `out/` | 训练/评估图片、`metrics.txt`、参数扫描图 | 否 |
-| `reports/` | 阶段汇报 PPT、旧文档备份、归档的 CSV/JSON/PNG | 否 |
-| `fresnel_data/`、`fresnel_runs/`、`fresnel_checks/`、`fresnel_reference/` | 新入口的运行产物，目录由 `--out` 指定 | 否 |
+| `src/` | 源码：`common/`、`forward/`、`inverse/` | 是 |
+| `legacy/` | 早期远场脚本 | 是 |
+| `tests/` | 单元测试 | 是 |
+| `docs/phase1/`、`docs/phase2/` | 随仓库发布的文字文档 | 是 |
+| `data/forward/`、`data/inverse/` | 生成的数据集（可有多个版本） | 否 |
+| `runs/forward/`、`runs/inverse/` | 权重、逐轮记录与计时 | 否 |
+| `results/forward/`、`results/inverse/` | 评估、检查与图片 | 否 |
+| `reports/phase1/`、`reports/phase2/` | 阶段汇报与原始结果归档 | 否 |
 
-仓库只跟踪源码（`.py`）、Markdown（`.md`）、`requirements.txt` 与 `.gitignore`。`run/`、`out/`、`reports/` 都是本地目录，首次克隆时并不存在，运行脚本或 `paths.py` 会自动创建需要的子目录。
+仓库只跟踪 `.py`、`.md`、`requirements.txt` 与 `.gitignore`。`data/`、`runs/`、`results/`、`reports/` 都是本地目录，首次克隆时并不存在，运行脚本或 `src/common/paths.py` 会自动创建需要的子目录。
 
-新模块仍依赖根目录 `generate_data.py` 和 `train.py`，请保留它们。新实验不向旧数据和训练结果目录写入；原始大数组、权重、CSV/JSON 与图片一律由 `.gitignore` 排除。
+`legacy/generate_data.py` 中的几何函数仍被 `src/common/apertures.py` 复用，请保留；新实验不向旧数据和训练结果目录写入。原始大数组、权重、CSV/JSON 与图片一律由 `.gitignore` 排除。
 
 ---
 
 ## 七、资料索引与说明
 
-- [阶段结果记录](docs/phase1_results/README.md)：阶段一指标表、结论与适用范围。
-- [阶段一公开检查点](docs/PHASE1_CHECKPOINT.md)：已完成范围、核验与尚未开展的工作。
-- [多菲涅耳数运行说明](fresnel_experiment/README.md)：物理约定、训练参数与输出字段。
-- [独立 RS1 验证说明](fresnel_experiment/RS1_AUDIT_README.md)：观察点、积分加密与指标口径。
-- [早期远场实验说明](docs/legacy_far_field.md)：旧流程、历史指标与解释修正。
+- [阶段结果记录](docs/phase1/README.md)：阶段一指标表、结论与适用范围。
+- [阶段一公开检查点](docs/phase1/CHECKPOINT.md)：已完成范围、核验与尚未开展的工作。
+- [阶段二说明](docs/phase2/README.md)：逆向任务的目标、数据契约与评估口径。
+- [多菲涅耳数运行说明](src/forward/README.md)：物理约定、训练参数与输出字段。
+- [独立 RS1 验证说明](src/forward/RS1_AUDIT_README.md)：观察点、积分加密与指标口径。
+- [早期远场实验说明](docs/phase1/legacy_far_field.md)：旧流程、历史指标与解释修正。
 
 本项目当前使用仿真数据，尚无真实实验测量验证。结果应结合传播近似、离散精度、标签来源与对照配置理解；正向低误差并不等于已经解决逆问题或证明残差网络具有额外收益。
 

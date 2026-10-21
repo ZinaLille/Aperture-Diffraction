@@ -1,6 +1,6 @@
 """Reuse the eight legacy geometry families without input noise or scaling."""
 import numpy as np
-import generate_data as legacy
+from legacy import generate_data as legacy
 
 STRATEGIES = ("multi_elements", "slits", "grating", "hole_array", "letter",
               "annular", "mixed_grating", "polygons")

@@ -6,14 +6,10 @@ venv/
 .vscode/
 
 # 运行产物（脚本可重新生成）
-/run/
-/out/
-/reports/
 /data/
-/fresnel_data/
-/fresnel_runs/
-/fresnel_checks/
-/fresnel_reference/
+/runs/
+/results/
+/reports/
 
 # 权重与数据数组
 *.pt

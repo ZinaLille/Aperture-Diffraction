@@ -2,10 +2,10 @@
 import argparse
 from pathlib import Path
 import numpy as np
-from .apertures import STRATEGIES, make_aperture, split_ids
-from .physics import (check_nf, group_name, geometry, postprocess,
-                      fraunhofer_raw, angular_spectrum_raw)
-from .io_utils import new_output, write_json, read_json, sha256
+from src.common.apertures import STRATEGIES, make_aperture, split_ids
+from src.common.physics import (check_nf, group_name, geometry, postprocess,
+                                fraunhofer_raw, angular_spectrum_raw)
+from src.common.io_utils import new_output, write_json, read_json, sha256
 from .validate import add_physics_args, config_from_args, validate
 
 
@@ -14,7 +14,7 @@ def main():
     add_physics_args(parser)
     parser.add_argument("--samples", type=int, default=1000, help="Original apertures; shared across all NF groups")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--out", default="fresnel_data/v1")
+    parser.add_argument("--out", default="data/forward/v1")
     parser.add_argument("--validation", type=Path, help="Existing matching validation.json; otherwise validate first")
     args = parser.parse_args()
     config, nf_values = config_from_args(args), check_nf(args.nf)

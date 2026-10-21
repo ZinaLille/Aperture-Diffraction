@@ -28,12 +28,14 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+from src.common.paths import data_dir
+
 # ============================================================
 # 配置 (必须和 train.py 一致)
 # ============================================================
 GRID = 256
 N_SAMPLES = 5000
-OUTPUT_DIR = 'data'
+OUTPUT_DIR = data_dir('forward', 'legacy')
 SEED = 42
 
 # ⚠️ 关键参数: 必须和 train.py 里的 LOG_ALPHA 一致

@@ -12,12 +12,12 @@ from torch.utils.data import DataLoader
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from .physics import PhysicsConfig, angular_spectrum_raw, postprocess, image_metrics
-from .models import ForwardModel, FraunhoferDetectorLayer
-from .torch_physics import AngularSpectrumDetectorLayer
-from .train import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
-from .io_utils import new_output, read_json, write_json, sha256
-from .timing import StageTimer, synchronize, duration, utc_now
+from src.common.physics import PhysicsConfig, angular_spectrum_raw, postprocess, image_metrics
+from src.forward.models import ForwardModel, FraunhoferDetectorLayer
+from src.common.torch_physics import AngularSpectrumDetectorLayer
+from src.forward.train import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
+from src.common.io_utils import new_output, read_json, write_json, sha256
+from src.common.timing import StageTimer, synchronize, duration, utc_now
 
 
 def predict(model, aperture, condition, z, pure):
@@ -113,8 +113,8 @@ def sample_plot(dataset, candidates, device, folder, nf):
 def main():
     started = time.perf_counter()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", default="fresnel_data/v1")
-    parser.add_argument("--out", default="fresnel_reference/asm_v1")
+    parser.add_argument("--data", default="data/forward/v1")
+    parser.add_argument("--out", default="results/forward/reference/asm_v1")
     parser.add_argument("--compare-run", type=Path, help="Read existing best checkpoints for a fair new inference pass")
     parser.add_argument("--groups", type=float, nargs="+")
     parser.add_argument("--splits", choices=("val", "test"), nargs="+", default=("val", "test"))

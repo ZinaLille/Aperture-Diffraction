@@ -12,12 +12,12 @@ from torch.utils.data import Dataset, DataLoader
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from train import Loss
-from .models import ForwardModel, FraunhoferDetectorLayer
-from .physics import image_metrics, PhysicsConfig, angular_spectrum_raw, postprocess
-from .io_utils import new_output, read_json, write_json, sha256
-from .torch_physics import AngularSpectrumDetectorLayer
-from .timing import StageTimer, synchronize, duration, utc_now
+from src.common.nets import Loss
+from src.forward.models import ForwardModel, FraunhoferDetectorLayer
+from src.common.physics import image_metrics, PhysicsConfig, angular_spectrum_raw, postprocess
+from src.common.io_utils import new_output, read_json, write_json, sha256
+from src.common.torch_physics import AngularSpectrumDetectorLayer
+from src.common.timing import StageTimer, synchronize, duration, utc_now
 
 
 class GroupData(Dataset):
@@ -340,8 +340,8 @@ def main():
     run_started = time.perf_counter()
     run_started_utc = utc_now()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", default="fresnel_data/v1")
-    parser.add_argument("--out", default=None, help="New directory only; defaults to a timestamped fresnel_runs folder")
+    parser.add_argument("--data", default="data/forward/v1")
+    parser.add_argument("--out", default=None, help="New directory only; defaults to a timestamped runs/forward folder")
     parser.add_argument("--groups", type=float, nargs="+", help="NF values; default all groups")
     parser.add_argument("--models", nargs="+", choices=("physics", "baseline"), default=("physics", "baseline"))
     parser.add_argument("--propagator", choices=("fraunhofer", "asm", "hybrid"), default="fraunhofer",
@@ -375,7 +375,7 @@ def main():
     torch.set_num_threads(args.cpu_threads)
     device = choose_device(args.device)
     print(f"Device: {device}; independently training {len(groups)} NF groups", flush=True)
-    out = None if args.dry_run else new_output(args.out or ("fresnel_runs/"+datetime.now().strftime("%Y%m%d_%H%M%S")))
+    out = None if args.dry_run else new_output(args.out or ("runs/forward/"+datetime.now().strftime("%Y%m%d_%H%M%S")))
     if out:
         write_json(out/"run_config.json", {"arguments": vars(args), "dataset_manifest_sha256": sha256(root/"manifest.json"),
                                           "selection": "best validation spatial L1; test used only after checkpoint selection"})

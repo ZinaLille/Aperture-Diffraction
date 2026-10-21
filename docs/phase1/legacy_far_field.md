@@ -7,13 +7,13 @@
 ## 早期实验流程
 
 ```bash
-python generate_data.py
-python train.py
-python evaluate.py
-python baseline.py all
+python -m legacy.generate_data
+python -m legacy.train
+python -m legacy.evaluate
+python -m legacy.baseline all
 ```
 
-这组旧命令从`data/`读取输入，把权重写入`run/`、把图片与评估结果写入`out/`（`out/eval_results/`、`out/comparison/`、`out/pix2pix_compare/`）。路径约定见根目录`paths.py`。复现当前多菲涅耳数实验请使用[新入口](../fresnel_experiment/README.md)，并选择新输出目录。
+这组旧命令从`data/forward/legacy/`读取输入，把权重写入`runs/forward/legacy/`、把图片与评估结果写入`results/forward/legacy/`（`eval_results/`、`comparison/`、`pix2pix_compare/`）。路径约定见`src/common/paths.py`。复现当前多菲涅耳数实验请使用[新入口](../../src/forward/README.md)，并选择新输出目录。
 
 旧生成器默认5000个256×256输入，八种几何策略，`APERTURE_NOISE=0.005`。加性扰动先施加到光阑，再由最终光阑计算标签；标签并未独立叠加观测噪声。整体乘性透过率缩放也不能直接等同于独立观测噪声。
 
@@ -52,4 +52,4 @@ FFT → fftshift → |场|² → 峰值归一化 → log1p(100·I) → 再归一
 | 损失日志 | 增加训练、验证、单轮、模型和总运行耗时 |
 | 手工管理输出 | 新目录独占创建、共享ID划分、元数据、哈希及检查点 |
 
-研究主线已从“在同源远场标签上得到低误差”，推进到“检查物理近似的适用范围，并用独立参照判断收益来源”。当前状态见[公开阶段检查点](PHASE1_CHECKPOINT.md)。
+研究主线已从“在同源远场标签上得到低误差”，推进到“检查物理近似的适用范围，并用独立参照判断收益来源”。当前状态见[公开阶段检查点](CHECKPOINT.md)。

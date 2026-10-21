@@ -1,12 +1,12 @@
 # 第一阶段：独立 RS1 传播审计
 
-入口：`python -m fresnel_experiment.rs1_audit`。只读原始数据和冻结权重，在新目录生成审计输入、直接积分结果、指标、图和报告。
+入口：`python -m src.forward.rs1_audit`。只读原始数据和冻结权重，在新目录生成审计输入、直接积分结果、指标、图和报告。
 
-本次正式输出为 `fresnel_checks/rs1_audit_v1/`。如需再次执行，在项目根目录使用新的输出名称：
+本次正式输出为 `results/forward/checks/rs1_audit_v1/`。如需再次执行，在项目根目录使用新的输出名称：
 
 ```powershell
 conda activate d2l
-python -m fresnel_experiment.rs1_audit --out fresnel_checks/rs1_audit_v2 --device cuda
+python -m src.forward.rs1_audit --out results/forward/checks/rs1_audit_v2 --device cuda
 ```
 
 默认 NF=0.03、3、5，八种策略各生成3个新光阑，共24个输入、72个传播案例。随机种子20261015；对全部原1000个输入及新输入逐一检查SHA256，排除完全重复。使用新几何样本，不重新生成或改写训练标签。
@@ -69,7 +69,7 @@ S=\max_j I_{RS}(p_j).
 针对本次新增逻辑的检查：
 
 ```powershell
-python -m unittest fresnel_experiment.test_rs1_audit -v
+python -m unittest tests.test_rs1_audit -v
 ```
 
 包括共同尺度能否保留强度偏差、采样边界/去重，以及独立RS积分与单像素方孔远场sinc解的比较。最后一项还验证收敛门槛能拒绝不足的积分精度。

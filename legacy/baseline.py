@@ -34,16 +34,16 @@ from matplotlib.gridspec import GridSpec
 from torch.utils.data import DataLoader
 
 # 复用 train.py 的所有组件，保证配置一致
-from train import (
+from legacy.train import (
     DiffractionDataset, Loss, PhysicsGuidedModel,
     BATCH_SIZE, EPOCHS, LR, VAL_RATIO, DEVICE,
     DATA_DIR, LOG_ALPHA, SAVE_PATH as PHYSICS_PATH,
 )
-from paths import ensure_parent, out_path, run_path
+from src.common.paths import ensure_parent, results_dir, run_dir
 
 
-BASELINE_PATH = run_path('baseline_model.pt')   # 权重放在 run/
-COMPARE_DIR = out_path('comparison')            # 对比图与指标放在 out/
+BASELINE_PATH = run_dir('forward', 'legacy', 'baseline_model.pt')
+COMPARE_DIR = results_dir('forward', 'legacy', 'comparison')
 
 # baseline 专用 LR
 BASELINE_LR = 3e-4
@@ -275,9 +275,9 @@ def train():
     ax.set_xlabel('epoch')
     ax.set_ylabel('L1')
     plt.tight_layout()
-    plt.savefig(ensure_parent(out_path('baseline_loss_curve.png')), dpi=120)
+    plt.savefig(ensure_parent(results_dir('forward', 'legacy', 'baseline_loss_curve.png')), dpi=120)
     plt.close()
-    print(f"Loss 曲线保存到: {out_path('baseline_loss_curve.png')}")
+    print(f"Loss 曲线保存到: {results_dir('forward', 'legacy', 'baseline_loss_curve.png')}")
 
 
 # ============================================================

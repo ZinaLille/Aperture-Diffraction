@@ -8,10 +8,10 @@ import unittest
 import time
 from unittest.mock import patch
 import numpy as np
-from .physics import (PhysicsConfig, check_nf, geometry, postprocess,
-                      angular_spectrum_raw, rayleigh_sommerfeld_points)
-from .apertures import STRATEGIES, make_aperture, split_ids
-from .io_utils import new_output
+from src.common.physics import (PhysicsConfig, check_nf, geometry, postprocess,
+                                angular_spectrum_raw, rayleigh_sommerfeld_points)
+from src.common.apertures import STRATEGIES, make_aperture, split_ids
+from src.common.io_utils import new_output
 
 
 class PipelineTests(unittest.TestCase):
@@ -34,7 +34,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder:
             self.assertTrue(Path(folder).resolve().is_relative_to(Path(__file__).resolve().parent))
             env = dict(os.environ, PYTHONPATH=root, PYTHONDONTWRITEBYTECODE="1")
-            result = subprocess.run([sys.executable, "-c", "import generate_data; import pathlib; assert not pathlib.Path('data').exists()"],
+            result = subprocess.run([sys.executable, "-c", "import legacy.generate_data; import pathlib; assert not pathlib.Path('data').exists()"],
                                     cwd=folder, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -67,7 +67,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_zero_residual_and_physics_gradient(self):
         import torch
-        from .models import ForwardModel
+        from src.forward.models import ForwardModel
         torch.manual_seed(42)
         model = ForwardModel("physics", base_ch=8)
         a = torch.rand(2, 1, 32, 32, requires_grad=True)
@@ -83,7 +83,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_torch_asm_matches_numpy_and_has_gradients(self):
         import torch
-        from .torch_physics import AngularSpectrumDetectorLayer
+        from src.common.torch_physics import AngularSpectrumDetectorLayer
         torch.set_num_threads(4)
         cfg = PhysicsConfig(grid=32)
         yy, xx = np.indices((32, 32))
@@ -106,8 +106,8 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError): layer(value, [-1])
 
     def test_stage_timer_sync_boundaries(self):
-        from .timing import StageTimer
-        with patch("fresnel_experiment.timing.synchronize") as sync:
+        from src.common.timing import StageTimer
+        with patch("src.common.timing.synchronize") as sync:
             with StageTimer("cuda") as timer:
                 sum(range(1000))
             self.assertEqual(sync.call_count, 2)

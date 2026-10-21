@@ -6,10 +6,10 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from .physics import (PhysicsConfig, DEFAULT_NF, check_nf, geometry, postprocess,
-                      fraunhofer_raw, angular_spectrum_raw,
-                      rayleigh_sommerfeld_points, image_metrics)
-from .io_utils import new_output, write_json
+from src.common.physics import (PhysicsConfig, DEFAULT_NF, check_nf, geometry, postprocess,
+                                fraunhofer_raw, angular_spectrum_raw,
+                                rayleigh_sommerfeld_points, image_metrics)
+from src.common.io_utils import new_output, write_json
 
 
 def standard_apertures(n):
@@ -130,7 +130,7 @@ def config_from_args(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     add_physics_args(parser)
-    parser.add_argument("--out", default="fresnel_checks/v1")
+    parser.add_argument("--out", default="results/forward/checks/v1")
     args = parser.parse_args()
     config, nf = config_from_args(args), check_nf(args.nf)
     out = new_output(args.out)

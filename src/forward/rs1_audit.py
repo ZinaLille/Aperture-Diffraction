@@ -16,13 +16,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from .apertures import STRATEGIES, make_aperture
-from .physics import (PhysicsConfig, check_nf, group_name, geometry, postprocess,
-                      fraunhofer_raw, angular_spectrum_raw, rayleigh_sommerfeld_points)
-from .io_utils import read_json, write_json, new_output, sha256
-from .train import GroupData, choose_device, write_csv, check_dataset
-from .reference import load_frozen
-from .timing import utc_now
+from src.common.apertures import STRATEGIES, make_aperture
+from src.common.physics import (PhysicsConfig, check_nf, group_name, geometry, postprocess,
+                                fraunhofer_raw, angular_spectrum_raw, rayleigh_sommerfeld_points)
+from src.common.io_utils import read_json, write_json, new_output, sha256
+from src.forward.train import GroupData, choose_device, write_csv, check_dataset
+from src.forward.reference import load_frozen
+from src.common.timing import utc_now
 
 
 def aperture_hash(a):
@@ -187,10 +187,10 @@ def figures(out, apertures, meta, previews, summaries):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data", type=Path, default=Path("fresnel_data/v1"))
-    parser.add_argument("--old-run", type=Path, default=Path("fresnel_runs/all_first"))
-    parser.add_argument("--asm-run", type=Path, default=Path("fresnel_runs/asm_nf3_nf5_e10_v1"))
-    parser.add_argument("--out", default="fresnel_checks/rs1_audit_v1")
+    parser.add_argument("--data", type=Path, default=Path("data/forward/v1"))
+    parser.add_argument("--old-run", type=Path, default=Path("runs/forward/all_first"))
+    parser.add_argument("--asm-run", type=Path, default=Path("runs/forward/asm_nf3_nf5_e10_v1"))
+    parser.add_argument("--out", default="results/forward/checks/rs1_audit_v1")
     parser.add_argument("--groups", type=float, nargs="+", default=(0.03, 3, 5))
     parser.add_argument("--per-family", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261015)

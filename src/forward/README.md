@@ -3,18 +3,18 @@
 截至2026-10-16，多菲涅耳数理想正向预测及收益归因阶段已完成。最初的前四步已扩展为：数据与传播验证、原物理层/基线训练、角谱换层、独立RS1审计及训练计时。
 默认网络物理层仍为夫琅禾费模型，可显式选择角谱或hybrid；没有进入逆向重建。
 
-公开进度见[阶段检查点](../docs/PHASE1_CHECKPOINT.md)，完整指标、图和配置见[轻量结果](../docs/phase1_results/README.md)。这些是已完成运行的记录，GitHub不附带工作数据和权重；首次克隆请按[项目主页的完整复现顺序](../README.md)生成数据并训练。
+公开进度见[阶段检查点](../../docs/phase1/CHECKPOINT.md)，完整指标、图和配置见[轻量结果](../../docs/phase1/README.md)。这些是已完成运行的记录，GitHub不附带工作数据和权重；首次克隆请按[项目主页的完整复现顺序](../../README.md)生成数据并训练。
 
-维护者本机已生成正式首批 `fresnel_data/v1/`：1000个原始光阑，每组1000对样本，七组共7000对。
+维护者本机已生成正式首批 `data/forward/v1/`：1000个原始光阑，每组1000对样本，七组共7000对。
 每组共享808/96/96的训练/验证/测试划分。已有数据时直接跳到“训练前只读检查”和“自行开始训练”。
-重新生成时请把输出改为新目录（如 `fresnel_data/v2`），不能重复使用v1。
+重新生成时请把输出改为新目录（如 `data/forward/v2`），不能重复使用v1。
 
 ## 原有结果保护
 
-- 旧 `data/` 与根目录脚本的产物（`run/`、`out/`、`reports/`）均不作为新脚本的输出。
-- 新输出仍分别位于 `fresnel_checks/`、`fresnel_data/`、`fresnel_runs/`，这些目录同样由 `.gitignore` 排除。
+- 早期远场脚本的产物（`data/forward/legacy/`、`runs/forward/legacy/`、`results/forward/legacy/`）不作为本包输出。
+- 本包输出统一在 `data/forward/`、`runs/forward/`、`results/forward/checks/` 与 `results/forward/reference/`，均由 `.gitignore` 排除。
 - 所有输出根目录必须不存在；没有覆盖开关。再次运行请选择新目录。
-- 旧 `generate_data.py` 仅把创建目录和设置随机种子移进 `main()`，避免导入几何函数就创建旧数据目录。旧命令生成逻辑及默认参数不变。
+- `legacy/generate_data.py` 仅把创建目录和设置随机种子移进 `main()`，避免导入几何函数就创建旧数据目录。旧命令生成逻辑及默认参数不变。
 
 ## 物理约定
 
@@ -67,7 +67,7 @@ conda activate d2l
 ## 1. 传播验证
 
 ```powershell
-python -m fresnel_experiment.validate --out fresnel_checks/v1
+python -m src.forward.validate --out results/forward/checks/v1
 ```
 
 输出 `validation.json`、逐形状指标 CSV、传播图及误差随 NF 的曲线。
@@ -78,7 +78,7 @@ python -m fresnel_experiment.validate --out fresnel_checks/v1
 ## 2. 生成数据
 
 ```powershell
-python -m fresnel_experiment.generate --samples 1000 --validation fresnel_checks/v1/validation.json --out fresnel_data/v1
+python -m src.forward.generate --samples 1000 --validation results/forward/checks/v1/validation.json --out data/forward/v1
 ```
 
 1000 是原始光阑数量，同一批光阑共享到七个 NF 组，各组分别有 1000 对输入/标签。
@@ -86,7 +86,7 @@ python -m fresnel_experiment.generate --samples 1000 --validation fresnel_checks
 不传 `--validation` 时，生成器会在新数据目录内先执行同样的验证；失败则不生成训练数组。
 
 ```text
-fresnel_data/v1/
+data/forward/v1/
   manifest.json                 # 完成标志、物理配置、分组、输入/划分哈希
   validation.json
   apertures.npy                 # 各组共享输入 [N,256,256]
@@ -105,7 +105,7 @@ fresnel_data/v1/
 ## 3. 训练前只读检查
 
 ```powershell
-python -m fresnel_experiment.train --data fresnel_data/v1 --dry-run
+python -m src.forward.train --data data/forward/v1 --dry-run
 ```
 
 检查文件身份、划分隔离、输入/标签/元数据ID、模型前向、零残差初始化；打印各组初始纯物理验证误差。
@@ -117,13 +117,13 @@ python -m fresnel_experiment.train --data fresnel_data/v1 --dry-run
 先运行一组：
 
 ```powershell
-python -m fresnel_experiment.train --data fresnel_data/v1 --groups 1 --out fresnel_runs/nf1_v1
+python -m src.forward.train --data data/forward/v1 --groups 1 --out runs/forward/nf1_v1
 ```
 
 再运行全部七组：
 
 ```powershell
-python -m fresnel_experiment.train --data fresnel_data/v1 --out fresnel_runs/all_v1
+python -m src.forward.train --data data/forward/v1 --out runs/forward/all_v1
 ```
 
 默认每组分别训练 physics（夫琅禾费+残差）和 baseline（无物理层），各50轮、batch16、base32、学习率3e-4。
@@ -140,25 +140,25 @@ PSNR使用固定数据范围1（不同于旧脚本的预测依赖峰值），不
 ## 小规模复现与测试
 
 ```powershell
-python -m unittest fresnel_experiment.test_pipeline fresnel_experiment.test_rs1_audit -v
-python -m fresnel_experiment.validate --grid 64 --out fresnel_checks/my_smoke
-python -m fresnel_experiment.generate --grid 64 --samples 24 --validation fresnel_checks/my_smoke/validation.json --out fresnel_data/my_smoke
-python -m fresnel_experiment.train --data fresnel_data/my_smoke --base-ch 8 --batch-size 8 --dry-run
+python -m unittest tests.test_pipeline tests.test_rs1_audit -v
+python -m src.forward.validate --grid 64 --out results/forward/checks/my_smoke
+python -m src.forward.generate --grid 64 --samples 24 --validation results/forward/checks/my_smoke/validation.json --out data/forward/my_smoke
+python -m src.forward.train --data data/forward/my_smoke --base-ch 8 --batch-size 8 --dry-run
 ```
 
 小网格仅用于检查流程，几何细节可能被下采样改变，不能用于正式性能结论。
 
 ## 更新：纯角谱参照与可选角谱训练
 
-新增 `python -m fresnel_experiment.reference`，只读现有数据和最佳权重，不训练网络、不写回旧结果。
+新增 `python -m src.forward.reference`，只读现有数据和最佳权重，不训练网络、不写回旧结果。
 会在同一划分、观察坐标和后处理下比较纯FFT、纯角谱、已有残差模型和已有基线。
 
 ```powershell
 conda activate d2l
-python -m fresnel_experiment.reference --data fresnel_data/v1 --compare-run fresnel_runs/all_first --device cuda --out fresnel_reference/asm_v2
+python -m src.forward.reference --data data/forward/v1 --compare-run runs/forward/all_first --device cuda --out results/forward/reference/asm_v2
 ```
 
-本次已评估的参照保存在 `fresnel_reference/asm_v1`，上面的v2仅为再次评估示例，不能使用已存在的输出目录。
+本次已评估的参照保存在 `results/forward/reference/asm_v1`，上面的v2仅为再次评估示例，不能使用已存在的输出目录。
 默认同时评估验证/测试集，角谱用float64、batch4；`--precision float32`可测训练所用精度，`--groups 3 5`可只检查重点组。
 输出包括 `summary.csv`、逐样本指标、样例图、实现一致性检查、对比图和总耗时。
 前向计时排除预热、数据加载、主机到设备传输、指标计算与绘图，在CUDA边界同步。旧模型用同一批量重新前向测量。
@@ -184,13 +184,13 @@ python -m fresnel_experiment.reference --data fresnel_data/v1 --compare-run fres
 先做只读检查：
 
 ```powershell
-python -m fresnel_experiment.train --data fresnel_data/v1 --groups 3 5 --models physics --propagator hybrid --batch-size 4 --device cuda --dry-run
+python -m src.forward.train --data data/forward/v1 --groups 3 5 --models physics --propagator hybrid --batch-size 4 --device cuda --dry-run
 ```
 
 维护者已完成的重点组配置为ASM、10轮、batch4，两组均选择epoch0。若自行重复这一对照，可使用新的输出目录：
 
 ```powershell
-python -m fresnel_experiment.train --data fresnel_data/v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --device cuda --out fresnel_runs/asm_nf3_nf5_reproduce
+python -m src.forward.train --data data/forward/v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --device cuda --out runs/forward/asm_nf3_nf5_reproduce
 ```
 
 ## 更新：训练时间统计（默认启用）
@@ -217,16 +217,16 @@ CPU使用单调墙钟，GPU在计时块前后同步，避免只统计到异步�
 
 ## 已完成：扩大独立RS1验证
 
-新增`python -m fresnel_experiment.rs1_audit`。在八类各3个新光阑上检查NF=0.03、3、5，共72例；每例73至82个共同观察点，独立RS1积分全部通过加密收敛检查。
+新增`python -m src.forward.rs1_audit`。在八类各3个新光阑上检查NF=0.03、3、5，共72例；每例73至82个共同观察点，独立RS1积分全部通过加密收敛检查。
 
 主对照为加入解析sinc像素面积因子的夫琅禾费与当前角谱，原点采样FFT另行保留。纯物理指标共用RS抽样峰值；网络归一化log输出的辅助指标分别解释。
 
 使用已生成数据和已训练权重时：
 
 ```powershell
-python -m fresnel_experiment.rs1_audit --data fresnel_data/v1 --old-run fresnel_runs/all_first --asm-run fresnel_runs/asm_nf3_nf5_e10_v1 --out fresnel_checks/rs1_audit_v2 --device cuda
+python -m src.forward.rs1_audit --data data/forward/v1 --old-run runs/forward/all_first --asm-run runs/forward/asm_nf3_nf5_e10_v1 --out results/forward/checks/rs1_audit_v2 --device cuda
 ```
 
-如果数据或权重使用其他输出名称，须相应替换三个输入路径。此命令只做冻结评估，不更新权重。详细口径见[审计说明](RS1_AUDIT_README.md)，结果见[公开汇总](../docs/phase1_results/README.md)。
+如果数据或权重使用其他输出名称，须相应替换三个输入路径。此命令只做冻结评估，不更新权重。详细口径见[审计说明](RS1_AUDIT_README.md)，结果见[公开汇总](../../docs/phase1/README.md)。
 
 NF=3、5的48例均支持角谱更接近独立积分，但这不构成新增网络收益：两组角谱残差最优均为epoch0。下一步固定系统偏差实验尚未开展。

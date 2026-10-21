@@ -1,9 +1,9 @@
 """Stage-one models with selectable Fraunhofer or scaled-ASM propagation."""
 import torch
 from torch import nn
-from train import ConvBlock
-from .physics import PhysicsConfig
-from .torch_physics import AngularSpectrumDetectorLayer
+from src.common.nets import ConvBlock
+from src.common.physics import PhysicsConfig
+from src.common.torch_physics import AngularSpectrumDetectorLayer
 
 
 class ConditionedUNet(nn.Module):

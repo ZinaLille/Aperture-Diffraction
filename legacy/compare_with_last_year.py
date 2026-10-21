@@ -34,17 +34,17 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # 直接复用今年的数据类与模型
-from train import DiffractionDataset, PhysicsGuidedModel
-from paths import ensure_parent, out_path, run_path
+from legacy.train import DiffractionDataset, PhysicsGuidedModel
+from src.common.paths import data_dir, ensure_parent, results_dir, run_dir
 
 # ============================================================
 # 配置
 # ============================================================
-DATA_DIR = 'data'
-CURRENT_MODEL_PATH = run_path('best_model.pt')          # 由 train.py 生成
-PIX2PIX_MODEL_PATH = run_path('pix2pix_last_year.pt')   # 本脚本训练
-COMPARE_FIG        = out_path('pix2pix_compare', 'compare_result.png')
-CURVE_FIG          = out_path('pix2pix_compare', 'compare_curve.png')
+DATA_DIR = data_dir('forward', 'legacy')
+CURRENT_MODEL_PATH = run_dir('forward', 'legacy', 'best_model.pt')
+PIX2PIX_MODEL_PATH = run_dir('forward', 'legacy', 'pix2pix_last_year.pt')
+COMPARE_FIG        = results_dir('forward', 'legacy', 'pix2pix_compare', 'compare_result.png')
+CURVE_FIG          = results_dir('forward', 'legacy', 'pix2pix_compare', 'compare_curve.png')
 
 BATCH_SIZE = 8
 EPOCHS     = 30          # pix2pix 收敛相对较快, 30 轮足够展示差距

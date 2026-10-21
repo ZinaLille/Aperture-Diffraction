@@ -27,16 +27,16 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
 # 从 train.py 导入模型定义
-from train import PhysicsGuidedModel, DiffractionDataset, Loss
-from paths import out_path, run_path
+from legacy.train import PhysicsGuidedModel, DiffractionDataset, Loss
+from src.common.paths import data_dir, results_dir, run_dir
 
 
 # ============================================================
 # 参数
 # ============================================================
-DEFAULT_MODEL = run_path('best_model.pt')
-DEFAULT_DATA_DIR = 'data'
-OUTPUT_DIR = out_path('eval_results')
+DEFAULT_MODEL = run_dir('forward', 'legacy', 'best_model.pt')
+DEFAULT_DATA_DIR = data_dir('forward', 'legacy')
+OUTPUT_DIR = results_dir('forward', 'legacy', 'eval_results')
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 

@@ -1,6 +1,6 @@
 # 第一阶段结果记录
 
-本页保留阶段一的指标表与结论。原始 CSV/JSON、图片和模型权重都不随仓库发布；需要复现时按[项目 README](../../README.md)第六章生成数据并训练。维护者本机的原始公开文件归档在 `reports/phase1_results/`，已被 `.gitignore` 排除。
+本页保留阶段一的指标表与结论。原始 CSV/JSON、图片和模型权重都不随仓库发布；需要复现时按[项目 README](../../README.md)第六章生成数据并训练。维护者本机的原始公开文件归档在 `reports/phase1/results/`，已被 `.gitignore` 排除。
 
 ## 1. 多菲涅耳数组训练
 
@@ -68,4 +68,4 @@ NF≥0.1 的标签由同一角谱计算生成，因此接近零的结果首先�
 
 ## 说明
 
-以上数字来自维护者已完成的运行。逐例明细（RS1 每例指标、辅助网络比较、环境与配置）保存在本机 `reports/phase1_results/`，不随仓库发布。数值口径与适用边界见[RS1 说明](../../fresnel_experiment/RS1_AUDIT_README.md)与[阶段检查点](../PHASE1_CHECKPOINT.md)。
+以上数字来自维护者已完成的运行。逐例明细（RS1 每例指标、辅助网络比较、环境与配置）保存在本机 `reports/phase1/results/`，不随仓库发布。数值口径与适用边界见[RS1 说明](../../src/forward/RS1_AUDIT_README.md)与[阶段检查点](CHECKPOINT.md)。
