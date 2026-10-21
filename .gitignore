@@ -1,5 +1,5 @@
 # ============================================================
-# 仓库只保留源码、文档与 docs/ 下精选的公开结果。
+# 仓库只保留源码、Markdown 与少量必要配置。
 # 以下内容都可由脚本重新生成，不进入 Git。
 # ============================================================
 
@@ -15,9 +15,10 @@ venv/
 .DS_Store
 Thumbs.db
 
-# ---- 运行产物：权重与训练记录（run/）----
-/run/*
-!/run/.gitkeep
+# ---- 运行产物：权重、训练记录、图片、评估结果与归档 ----
+/run/
+/out/
+/reports/
 *.pt
 *.pth
 *.ckpt
@@ -25,21 +26,16 @@ Thumbs.db
 /change_protection/
 /fresnel_runs/
 
-# ---- 运行产物：图片与评估结果（out/）----
-/out/*
-!/out/.gitkeep
-
 # ---- 数据数组（体积大，由 generate_data.py 生成）----
 /data/
 /fresnel_data/
 *.npy
 *.npz
 
-# ---- 本机检查材料与阶段汇报（fresnel_* / reports/）----
+# ---- 本机检查材料 ----
 /fresnel_checks/
 /fresnel_reference/
 /fresnel_analysis/
-/reports/
 /publish_checks/
 
 # ---- 含本机路径的审计/发布快照 ----

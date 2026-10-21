@@ -41,7 +41,7 @@
 2. **物理近似在什么条件下失效？** 从单一远场条件扩展到七组菲涅耳数，检查夫琅禾费近似在有限传播距离下的误差。
 3. **性能改善究竟来自哪里？** 同时比较纯物理、未训练的零残差模型（epoch0）和训练后的模型，再用独立积分验证，区分物理层收益与神经网络收益。
 
-> 首次克隆后，请按第六章生成数据并训练。仓库提供代码、轻量指标与图表；本次多菲涅耳数实验的大数组和模型权重不随仓库发布。
+> 首次克隆后，请按第六章生成数据并训练。仓库只包含源码与文字文档；原始数据、模型权重、指标 CSV/JSON 与图片都不随仓库发布，均可由脚本重新生成。
 
 ---
 
@@ -159,7 +159,7 @@ $$
 
 ## 三、阶段一：正向预测（光阑 → 衍射）✅ 已完成当前实验
 
-> 本章记录从早期远场实验到多菲涅耳数、角谱换层和独立 RS1 验证的完整主线。详细原始指标见[阶段结果与来源](docs/phase1_results/README.md)，完成范围见[阶段检查点](docs/PHASE1_CHECKPOINT.md)。
+> 本章记录从早期远场实验到多菲涅耳数、角谱换层和独立 RS1 验证的完整主线。详细结果记录见[阶段结果记录](docs/phase1_results/README.md)，完成范围见[阶段检查点](docs/PHASE1_CHECKPOINT.md)。
 
 ### 3.1 阶段目标与实验顺序
 
@@ -318,7 +318,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 #### 3.8.1 早期远场实验：物理层能够近乎复现同源标签
 
-以下为旧验证集 500 个样本的历史记录，来源为[历史指标文件](docs/phase1_results/legacy_metrics.txt)：
+以下为旧验证集 500 个样本的历史记录（原始指标文件不随仓库发布）：
 
 | 模型 | MAE ↓ | RMSE ↓ | PSNR ↑ | Corr ↑ |
 |------|-------:|--------:|-------:|-------:|
@@ -330,7 +330,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 #### 3.8.2 七组对照：大菲涅耳数下远场近似误差增大
 
-以下为当前实验每组 **96 张测试图**的归一化 log 图样 MAE。原物理模型与基线各训练 50 轮，来源为[分组汇总](docs/phase1_results/forward_summary.csv)：
+以下为当前实验每组 **96 张测试图**的归一化 log 图样 MAE。原物理模型与基线各训练 50 轮（原始分组汇总不随仓库发布）：
 
 | $N_F$ | 纯夫琅禾费 | 夫琅禾费 + 残差 | 纯网络基线 |
 |------:|-----------:|----------------:|-----------:|
@@ -346,7 +346,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 #### 3.8.3 角谱换层：低误差主要来自传播模型
 
-在同一批数据上加入七组纯角谱参照，并对 $N_F=3,5$ 各训练 10 轮角谱残差模型。来源为[角谱训练汇总](docs/phase1_results/asm_training_summary.csv)：
+在同一批数据上加入七组纯角谱参照，并对 $N_F=3,5$ 各训练 10 轮角谱残差模型（原始汇总不随仓库发布）：
 
 | $N_F$ | 纯角谱测试 MAE（单精度） | 角谱 + 残差最佳 MAE | 最佳轮次 |
 |------:|------------------------:|--------------------:|---------:|
@@ -373,7 +373,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 | 3 | 0.133510 | 4.99791e-5 | 1.06563e-5 | 24/24 |
 | 5 | 0.304586 | 6.40216e-5 | 1.31783e-5 | 24/24 |
 
-来源：[独立积分汇总](docs/phase1_results/rs1_summary.csv)、[逐例胜出统计](docs/phase1_results/rs1_win_counts.json)。$N_F=3,5$ 的 48 例改善均超过参考末次平均加密变化的 5 倍；这是数值判别规则，不是严格误差界或统计显著性检验。
+原始逐例数据不随仓库发布。$N_F=3,5$ 的 48 例改善均超过参考末次平均加密变化的 5 倍；这是数值判别规则，不是严格误差界或统计显著性检验。
 
 冻结旧残差网络后，在新光阑上的**辅助图样比较**中，$N_F=3,5$ 的平均误差分别降低 26.32%、32.14%。这支持旧网络可以补偿部分夫琅禾费近似误差；该辅助指标涉及图样归一化，不能用来论证绝对强度精度。详见[网络辅助比较](docs/phase1_results/README.md)与[RS1 方法说明](fresnel_experiment/RS1_AUDIT_README.md)。
 
@@ -386,20 +386,20 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 当前已完成的是理想标量仿真下的正向实验与收益归因；真实测量、未见 $N_F$ 外推、逆向重建和含干扰双向系统均未完成。
 
-### 3.11 结果图解读
+### 3.11 结果图说明
 
-沿用按文件名说明的方式，点击链接查看图片。历史图与当前图使用不同实验配置，应分别解读。
+所有图片都不随仓库发布。按 6.2 节复现后，新图会写入本地 `fresnel_runs/`，早期远场脚本的图写入 `out/`；维护者本机的历史公开图归档在 `reports/phase1_results/`。下表仍按文件名说明各图内容，便于日后对照；历史图与当前图使用不同实验配置，应分别解读。
 
-| 图 | 文件 | 读图要点 |
-|----|------|----------|
-| **图 1 · 七组模型对照** | [forward_group_comparison.png](docs/phase1_results/forward_group_comparison.png) | 比较各 $N_F$ 下纯夫琅禾费、夫琅禾费 + 残差和基线误差，观察近似误差随组别的变化 |
-| **图 2 · 纯角谱参照** | [asm_reference_mae.png](docs/phase1_results/asm_reference_mae.png) | 标签与角谱同源的组误差极小；远场点采样 FFT 与角谱还存在像素积分方式的差异 |
-| **图 3 · 角谱模型学习曲线** | [NF=3](docs/phase1_results/asm_nf3_loss_curve.png)、[NF=5](docs/phase1_results/asm_nf5_loss_curve.png) | 将训练 / 验证曲线与 epoch0 参考线一起看；曲线下降并不意味着超过未训练起点 |
-| **图 4 · 独立传播检查** | [rs1_physics_comparison.png](docs/phase1_results/rs1_physics_comparison.png) | 采用共同 RS 参照与同像素解释，检查角谱优势以及网格加密的影响 |
-| **图 5 · NF=5 八类示例** | [rs1_nf5_examples.png](docs/phase1_results/rs1_nf5_examples.png) | 同时查看光阑和图样；右栏横轴是观察点编号，并非空间剖面，Fraunhofer 曲线为原点采样 FFT |
-| **历史图 · 正向与基线训练** | [train_result.png](docs/figures/train_result.png)、[loss_curve.png](docs/figures/loss_curve.png)、[baseline_loss_curve.png](docs/figures/baseline_loss_curve.png) | 展示早期远场实验，不能替代当前多 $N_F$ 结果或证明新增网络收益 |
+| 图 | 文件名 | 读图要点 |
+|----|--------|----------|
+| **图 1 · 七组模型对照** | `forward_group_comparison.png` | 比较各 $N_F$ 下纯夫琅禾费、夫琅禾费 + 残差和基线误差，观察近似误差随组别的变化 |
+| **图 2 · 纯角谱参照** | `asm_reference_mae.png` | 标签与角谱同源的组误差极小；远场点采样 FFT 与角谱还存在像素积分方式的差异 |
+| **图 3 · 角谱模型学习曲线** | `asm_nf3_loss_curve.png`、`asm_nf5_loss_curve.png` | 将训练 / 验证曲线与 epoch0 参考线一起看；曲线下降并不意味着超过未训练起点 |
+| **图 4 · 独立传播检查** | `rs1_physics_comparison.png` | 采用共同 RS 参照与同像素解释，检查角谱优势以及网格加密的影响 |
+| **图 5 · NF=5 八类示例** | `rs1_nf5_examples.png` | 同时查看光阑和图样；右栏横轴是观察点编号，并非空间剖面，Fraunhofer 曲线为原点采样 FFT |
+| **历史图 · 正向与基线训练** | `train_result.png`、`loss_curve.png`、`baseline_loss_curve.png` | 展示早期远场实验，不能替代当前多 $N_F$ 结果或证明新增网络收益 |
 
-更多逐样本指标、完整图表与来源见[阶段结果索引](docs/phase1_results/README.md)。
+逐样本指标、CSV/JSON 与其余图表同样不随仓库发布；文字结论与表格见[阶段结果记录](docs/phase1_results/README.md)。
 
 ### 3.12 阶段一产出物
 
@@ -409,7 +409,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 | 训练 | 每组纯物理参照、epoch0 指标、最佳权重、选优轮次、测试逐样本指标 |
 | 可视化 | 学习曲线、验证样例、分组对比和独立传播检查图 |
 | 时间统计 | 逐轮、单模型、分组及整次运行耗时 |
-| 公开结果 | `docs/phase1_results/` 中的 CSV、JSON 和 PNG |
+| 结果记录 | 指标表与结论见 README 与 `docs/phase1_results/`；CSV/JSON/PNG 不随仓库发布 |
 | 状态记录 | [公开阶段检查点](docs/PHASE1_CHECKPOINT.md)；检查点记录了 11 项测试通过及原有结果保护核验 |
 
 ---
@@ -447,7 +447,7 @@ python -m pip install -r requirements.txt
 python -m unittest fresnel_experiment.test_pipeline fresnel_experiment.test_rs1_audit -v
 ```
 
-本次记录的实验环境为 Python 3.11.16、PyTorch 2.14.0+cu130、NumPy 1.23.5、Matplotlib 3.7.2，GPU 为 RTX 5070 Laptop GPU。它是维护者的实测记录，不是所有设备必须照搬的版本组合；详见[环境记录](docs/phase1_results/environment.json)。
+本次记录的实验环境为 Python 3.11.16、PyTorch 2.14.0+cu130、NumPy 1.23.5、Matplotlib 3.7.2，GPU 为 RTX 5070 Laptop GPU。它是维护者的实测记录，不是所有设备必须照搬的版本组合；原始环境记录不随仓库发布。
 
 以下命令均在**项目根目录**运行，即包含 `fresnel_experiment/` 的目录。设备默认 `auto`，也可显式添加 `--device cuda` 或 `--device cpu`。训练入口会实际探测 CUDA 计算能力。
 
@@ -546,7 +546,7 @@ python baseline.py all      # 基线权重 -> run/，对比结果 -> out/compari
 Aperture-Diffraction/
 ├── README.md                       # 项目总览、原理、阶段结果与运行说明
 ├── requirements.txt                # 核心依赖
-├── .gitignore                      # 只提交源码、文档与精选图
+├── .gitignore                      # 只提交源码与 Markdown
 ├── paths.py                        # run/ 与 out/ 的路径约定
 ├── generate_data.py                # 早期生成器与八类几何函数
 ├── train.py                        # 早期物理模型；新模块复用 ConvBlock、Loss
@@ -568,12 +568,10 @@ Aperture-Diffraction/
 ├── docs/
 │   ├── PHASE1_CHECKPOINT.md        # 当前阶段检查点
 │   ├── legacy_far_field.md         # 历史实验与解释修正
-│   ├── phase1_results/             # 公开 CSV、JSON、图表与来源
-│   ├── figures/                    # README 引用的历史图快照
-│   └── UPLOAD_GUIDE.md             # 首次发布文件范围说明
+│   └── phase1_results/README.md    # 阶段一文字结果与指标表
 ├── run/                            # 本机：权重与训练记录（不提交）
 ├── out/                            # 本机：图片、指标与评估结果（不提交）
-└── reports/                        # 本机：阶段汇报 PPT 与备份（不提交）
+└── reports/                        # 本机：阶段汇报、归档结果（不提交）
 ```
 
 ### 6.6 本地目录约定
@@ -583,19 +581,18 @@ Aperture-Diffraction/
 | `data/` | `generate_data.py` 生成的输入数组 | 否 |
 | `run/` | `best_model.pt`、`baseline_model.pt`、`history.csv` 等权重与训练记录 | 否 |
 | `out/` | 训练/评估图片、`metrics.txt`、参数扫描图 | 否 |
-| `reports/` | 阶段汇报 PPT 与旧文档备份 | 否 |
+| `reports/` | 阶段汇报 PPT、旧文档备份、归档的 CSV/JSON/PNG | 否 |
 | `fresnel_data/`、`fresnel_runs/`、`fresnel_checks/`、`fresnel_reference/` | 新入口的运行产物，目录由 `--out` 指定 | 否 |
-| `docs/phase1_results/`、`docs/figures/` | 精选的公开指标、图表与历史图快照 | 是 |
 
-`run/` 与 `out/` 里保留了 `.gitkeep`，因此克隆仓库后目录结构可见；其中的实际产物被 `.gitignore` 忽略，重新运行脚本即可再生成。如果希望某张新图也出现在 GitHub 上，把它复制到 `docs/figures/` 再提交。
+仓库只跟踪源码（`.py`）、Markdown（`.md`）、`requirements.txt` 与 `.gitignore`。`run/`、`out/`、`reports/` 都是本地目录，首次克隆时并不存在，运行脚本或 `paths.py` 会自动创建需要的子目录。
 
-新模块仍依赖根目录 `generate_data.py` 和 `train.py`，请保留它们。新实验不向旧数据和训练结果目录写入；原始大数组、新权重与本机检查材料由 `.gitignore` 排除，精选展示结果另存于 `docs/phase1_results/` 与 `docs/figures/`。
+新模块仍依赖根目录 `generate_data.py` 和 `train.py`，请保留它们。新实验不向旧数据和训练结果目录写入；原始大数组、权重、CSV/JSON 与图片一律由 `.gitignore` 排除。
 
 ---
 
 ## 七、资料索引与说明
 
-- [阶段结果与图表来源](docs/phase1_results/README.md)：完整指标、学习曲线及逐例数据入口。
+- [阶段结果记录](docs/phase1_results/README.md)：阶段一指标表、结论与适用范围。
 - [阶段一公开检查点](docs/PHASE1_CHECKPOINT.md)：已完成范围、核验与尚未开展的工作。
 - [多菲涅耳数运行说明](fresnel_experiment/README.md)：物理约定、训练参数与输出字段。
 - [独立 RS1 验证说明](fresnel_experiment/RS1_AUDIT_README.md)：观察点、积分加密与指标口径。

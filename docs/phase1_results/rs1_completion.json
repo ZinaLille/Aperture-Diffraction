@@ -1,8 +1,0 @@
-{
-  "status": "completed",
-  "cases": 72,
-  "converged_cases": 72,
-  "wall_seconds": 375.38976409996394,
-  "finished_at_utc": "2026-10-15T14:13:42.107530+00:00",
-  "all_fresh": true
-}

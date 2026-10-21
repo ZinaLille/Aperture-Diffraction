@@ -1,9 +1,0 @@
-{
-  "python": "3.11.16",
-  "torch": "2.14.0+cu130",
-  "numpy": "1.23.5",
-  "matplotlib": "3.7.2",
-  "cuda_runtime": "13.0",
-  "gpu": "NVIDIA GeForce RTX 5070 Laptop GPU",
-  "note": "Versions observed in the d2l environment on 2026-10-16; CUDA build is platform-specific."
-}
