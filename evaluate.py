@@ -1,7 +1,8 @@
-"""阶段一评估与可视化：纯物理参照、physics/baseline 权重对比。
+"""阶段一评估与可视化：纯物理参照、physics 权重与可选 baseline 对比。
 
 默认在同一 test 划分和同一观察坐标下比较：
-    纯夫琅禾费 FFT、纯缩放角谱、physics 权重、baseline 权重
+    纯夫琅禾费 FFT、纯缩放角谱、physics 权重
+如果 --run 中存在 baseline 权重，再一并比较 baseline。
 省略 --run 时只评估纯物理参照。
 
 用法：

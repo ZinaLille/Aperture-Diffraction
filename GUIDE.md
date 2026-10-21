@@ -3,7 +3,7 @@
 这份文档解释 `Aperture-Diffraction` 当前阶段一正向训练工程。读者按顺序读完后，应能独立完成：
 
 1. 按菲涅耳数（NF）生成光阑与衍射图样数据；
-2. 逐 NF 训练 `physics` 与 `baseline` 两个模型；
+2. 逐 NF 训练 `physics`；需要纯网络对照时再显式启用 `baseline`；
 3. 生成指标、样本对比图、误差图、极端形状图与参数扫描图。
 
 ---
@@ -44,7 +44,7 @@ results/demo/extreme_test.png
 | 脚本 | 输入 | 输出 | 一句话说明 |
 |---|---|---|---|
 | [`generate.py`](generate.py) | 光阑数、NF 列表、物理参数 | `data/` 数据集 | 光阑 → 传播 → log 标签 |
-| [`train.py`](train.py) | `generate.py` 的数据目录 | `runs/` 权重与训练记录 | 每个 NF 分别训练 physics / baseline |
+| [`train.py`](train.py) | `generate.py` 的数据目录 | `runs/` 权重与训练记录 | 每个 NF 训练 physics；baseline 可选 |
 | [`evaluate.py`](evaluate.py) | 数据 + 训练输出 | `results/` 指标与图片 | 纯物理与冻结权重对比、可视化 |
 
 数据流：
@@ -57,7 +57,8 @@ data/v1/
    │
    ▼
 train.py
-   │  nf_*/{physics,baseline}/best_model.pt + history.csv + 训练图
+   │  nf_*/physics/best_model.pt + history.csv + 训练图
+   │  （显式启用 baseline 时才有 nf_*/baseline/）
    ▼
 runs/v1/
    │
@@ -246,9 +247,9 @@ python generate.py --nf 0.01 0.03 0.1 0.3 1 3 5 --samples 1000 --out data/v1
 | 训练 | `run_group` | [train.py:484](train.py#L484) |
 | CLI | `main` | [train.py:558](train.py#L558) |
 
-### 4.2 两种模型
+### 4.2 physics（默认）与 baseline（可选）
 
-**physics**
+**physics（默认训练）**
 
 ```text
 光阑 a ──► 固定传播层 Φ(a,z) ──► I_sim ──┐
@@ -260,12 +261,13 @@ python generate.py --nf 0.01 0.03 0.1 0.3 1 3 5 --samples 1000 --out data/v1
 - 残差输出层权重和偏置初始化为 0；
 - epoch 0 时 `ΔI=0`，预测严格等于纯物理结果。
 
-**baseline**
+**baseline（可选对照）**
 
 ```text
 光阑 a ──► 纯 U-Net ──► Î
 ```
 
+- 仅在显式传 `--models baseline` 或 `--models physics baseline` 时训练；
 - 输入 3 通道：光阑、两个条件通道；
 - 没有物理层；
 - 输出层偏置初始化为训练标签均值。
@@ -323,15 +325,17 @@ runs/v1/
 ├── run_config.json
 ├── summary.csv
 └── nf_0p01/ ... nf_5/
-    ├── physics/
-    │   ├── best_model.pt
-    │   ├── history.csv
-    │   ├── selection.json
-    │   ├── test_metrics.json
-    │   ├── loss_curve.png
-    │   └── train_result.png
-    └── baseline/
-        └── ... 同上
+    └── physics/                 # 默认
+        ├── best_model.pt
+        ├── history.csv
+        ├── selection.json
+        ├── test_metrics.json
+        ├── loss_curve.png
+        └── train_result.png
+
+# 显式启用 baseline 时，每个 NF 组会多出：
+# baseline/
+#   └── ... 同上
 ```
 
 `best_model.pt` 里保存了模型结构信息、`physics_config`、条件标准化统计、`propagator` 与 NF，评估时据此重建模型并校验。
@@ -339,14 +343,17 @@ runs/v1/
 ### 4.7 常用命令
 
 ```bash
-# 七组 × physics/baseline
+# 七组 physics（默认）
 python train.py --data data/v1 --out runs/v1
 
 # 只跑 NF=1
 python train.py --data data/v1 --groups 1 --out runs/nf1
 
-# 只训练 physics
-python train.py --data data/v1 --models physics --out runs/physics
+# 需要纯网络对照时，同时训练 physics + baseline
+python train.py --data data/v1 --models physics baseline --out runs/with_baseline
+
+# 只训练 baseline
+python train.py --data data/v1 --models baseline --out runs/baseline
 
 # 角谱物理层换层对照
 python train.py --data data/v1 --groups 3 5 --models physics \
@@ -363,7 +370,7 @@ python train.py --data data/v1 --propagator hybrid --out runs/hybrid
 | `--data` | `data/v1` | `generate.py` 的输出目录 |
 | `--out` | `runs/<时间戳>` | 新目录，必须不存在 |
 | `--groups` | 全部 | 只训练指定 NF |
-| `--models` | physics baseline | 选择模型 |
+| `--models` | physics | 默认只训练 physics；需要对照时加 baseline |
 | `--propagator` | fraunhofer | physics 分支的传播层 |
 | `--epochs` | 50 | 训练轮数 |
 | `--batch-size` | 16 | 显存不足时改 4/2 |
@@ -382,7 +389,7 @@ python train.py --data data/v1 --propagator hybrid --out runs/hybrid
 | 区块 | 内容 | 关键位置 |
 |---|---|---|
 | 权重加载 | `load_model` | [evaluate.py:37](evaluate.py#L37) |
-| 方法集合 | 纯 FFT、纯 ASM、physics、baseline | [evaluate.py:61](evaluate.py#L61) |
+| 方法集合 | 纯 FFT、纯 ASM、physics；baseline 可选 | [evaluate.py:61](evaluate.py#L61) |
 | 逐样本评估 | `evaluate_group` | [evaluate.py:74](evaluate.py#L74) |
 | 基础图 | MAE 曲线、样本图、误差图、直方图 | [evaluate.py:99](evaluate.py#L99) |
 | 极端形状 | 八种标准形状 | [evaluate.py:256](evaluate.py#L256) |
@@ -399,7 +406,7 @@ python train.py --data data/v1 --propagator hybrid --out runs/hybrid
 提供 `--run` 时再加载：
 
 - `physics`：训练好的物理 + 残差模型；
-- `baseline`：训练好的纯 U-Net。
+- `baseline`：如果该 run 里存在 `baseline/best_model.pt`，一并加载。
 
 `load_model` 会检查：
 
@@ -436,15 +443,17 @@ PSNR 使用固定数据范围 1，所以接近零误差时会出现很大的 dB 
 每个 NF 一行，列为：
 
 ```text
-光阑 | 纯 FFT | 纯 ASM | physics | baseline | 标签
+光阑 | 纯 FFT | 纯 ASM | physics | [baseline] | 标签
 ```
+
+`baseline` 列只在训练过 baseline 时出现。
 
 重点看：
 
 - 低 NF 组：FFT 应该接近标签；
 - 高 NF 组：ASM 应该接近标签，FFT 误差更大；
 - physics 应该接近它的物理层；
-- baseline 通常更模糊或偏差更大。
+- 如果启用了 baseline，它通常更模糊或偏差更大。
 
 **`error_map.png`**
 
@@ -460,8 +469,8 @@ PSNR 使用固定数据范围 1，所以接近零误差时会出现很大的 dB 
 **`error_histogram.png`**
 
 - 逐样本 MAE 分布；
-- physics 相对 baseline 的改善百分比；
-- 逐样本 physics vs baseline 散点。
+- 有 baseline 时，额外给出 physics 相对 baseline 的改善百分比；
+- 有 baseline 时，额外给出 physics vs baseline 散点。
 
 **`test_mae_comparison.png`**
 
@@ -563,7 +572,7 @@ python evaluate.py --data data/v1 --run runs/asm_v1 --groups 3 5 \
 
 按这个顺序看：
 
-1. `results/.../summary.csv`：纯 FFT、纯 ASM、physics、baseline 的 MAE 是否呈预期关系；
+1. `results/.../summary.csv`：纯 FFT、纯 ASM、physics（若启用则加 baseline）的 MAE 是否呈预期关系；
 2. `samples.png`：每行 NF 对应的图样形状是否正确；
 3. `selection.json`：最佳轮次是否为 0；若为 0，说明残差网络没有超过物理起点；
 4. `loss_curve.png`：训练/验证 L1 是否稳定，频域项与残差项是否发散；
@@ -576,7 +585,7 @@ python evaluate.py --data data/v1 --run runs/asm_v1 --groups 3 5 \
 - `NF ≥ 0.1`：标签由 ASM 生成，`asm_only` 接近机器零；
 - 默认 physics 使用 FFT，在高 NF 组会与 ASM 标签有明显偏差；
 - 换成 `--propagator asm` 后，physics 的 epoch 0 通常就能接近标签；
-- baseline 没有物理约束，通常误差更大。
+- 如果显式训练了 baseline，它没有物理约束，通常误差更大。
 
 ---
 

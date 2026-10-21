@@ -1,12 +1,13 @@
-"""阶段一训练：每个菲涅耳数分组分别训练 physics 与 baseline。
+"""阶段一训练：每个菲涅耳数分组训练 physics；baseline 为可选对照。
 
 physics  = 固定传播层 + 零初始化残差 U-Net
-baseline = 纯 U-Net（相同骨干，无物理层）
+baseline = 纯 U-Net（相同骨干，无物理层），需要时用 --models baseline 启用
 损失     = L1 + λ_f·log 频谱 L1 + λ_s·(1-SSIM) + λ_r·|ΔI|
 SSIM 为内置可微实现，不依赖 torchmetrics / pytorch-msssim。
 
 用法：
     python train.py --data data/v1 --out runs/v1
+    python train.py --data data/v1 --models physics baseline --out runs/with_baseline
     python train.py --data data/v1 --groups 3 5 --propagator asm \
         --epochs 10 --batch-size 4 --out runs/asm_v1
 
@@ -537,6 +538,8 @@ def run_group(root, group, args, device, out_root):
                                 weights_only=False)
         model.load_state_dict(checkpoint["state_dict"])
         test = score(model, loaders["test"], device)
+        with (folder / "test_metrics.json").open("w", encoding="utf-8") as f:
+            json.dump(test, f, ensure_ascii=False, indent=2)
         with (folder / "selection.json").open("w", encoding="utf-8") as f:
             json.dump({"best_epoch": checkpoint["epoch"],
                        "best_validation_l1": checkpoint["val_l1"],
@@ -562,7 +565,8 @@ def main():
     parser.add_argument("--out", default=None, help="新目录；默认 runs/<时间戳>")
     parser.add_argument("--groups", type=float, nargs="+", help="只训练指定 NF 组")
     parser.add_argument("--models", nargs="+", choices=("physics", "baseline"),
-                        default=("physics", "baseline"))
+                        default=("physics",),
+                        help="默认只训练 physics；需要纯网络对照时显式加 baseline")
     parser.add_argument("--propagator", choices=("fraunhofer", "asm", "hybrid"),
                         default="fraunhofer",
                         help="物理层；hybrid 在 NF<切换点用 FFT，其余用 ASM")

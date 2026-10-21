@@ -44,22 +44,24 @@ data/v1/
 python train.py --data data/v1 --out runs/v1
 ```
 
-- 每个 NF 组分别训练 `physics`（固定传播层 + 零初始化残差 U-Net）和 `baseline`（纯 U-Net）。
+- 默认每个 NF 组只训练 `physics`（固定传播层 + 零初始化残差 U-Net）；`baseline`（纯 U-Net）是需要对照时再显式启用的可选项。
 - 损失：`L1 + 0.1·log 频谱 L1 + λ_s·(1-SSIM) + 1e-3·|ΔI|`；`--lambda-ssim` 默认 0，开启后使用内置 SSIM。
 - `--propagator fraunhofer`（默认）/ `asm` / `hybrid`；`hybrid` 在切换点以下用 FFT、以上用 ASM。
 - 最优权重只按验证集空间 L1 选择，epoch 0 也参与。
 
-每个模型目录 `runs/v1/nf_*/{physics,baseline}/`：
+默认模型目录 `runs/v1/nf_*/physics/`；显式训练 baseline 时才会多出 `baseline/`：
 
 ```text
+physics/ 或 baseline/
 best_model.pt   history.csv   selection.json   test_metrics.json
 loss_curve.png  train_result.png
 ```
 
-只跑一组或换层对照：
+只跑一组、启用 baseline 或换层对照：
 
 ```bash
 python train.py --data data/v1 --groups 1 --out runs/nf1
+python train.py --data data/v1 --models physics baseline --out runs/with_baseline
 python train.py --data data/v1 --groups 3 5 --models physics \
     --propagator asm --epochs 10 --batch-size 4 --out runs/asm_v1
 ```
@@ -70,7 +72,7 @@ python train.py --data data/v1 --groups 3 5 --models physics \
 python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
 ```
 
-默认在同一 test 划分上比较 `fraunhofer_only`、`asm_only`、`physics`、`baseline`。省略 `--run` 则只评估纯物理参照。
+默认在同一 test 划分上比较 `fraunhofer_only`、`asm_only`、`physics`；如果 `--run` 中存在 baseline 权重，再一并比较 `baseline`。省略 `--run` 则只评估纯物理参照。
 
 输出：
 
@@ -80,9 +82,9 @@ python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
 | `per_sample.csv` | 逐样本指标 |
 | `metrics.txt` | 七组平均表与简短结论 |
 | `test_mae_comparison.png` | 测试 MAE 随 NF 变化 |
-| `samples.png` | 每个 NF 一个样本：光阑、两种纯物理、两个模型、标签 |
+| `samples.png` | 每个 NF 一个样本：光阑、两种纯物理、physics（若训练了 baseline 也包含）、标签 |
 | `error_map.png` | 单样本误差、模型差值、中心剖面、像素误差直方图 |
-| `error_histogram.png` | 逐样本 MAE 分布与 physics/baseline 散点 |
+| `error_histogram.png` | 逐样本 MAE 分布；有 baseline 时额外显示对比散点 |
 | `extreme_test.png` | 单缝、双缝、圆孔、方孔、光栅、环、全开、全挡 |
 | `sweep_slit_width.png` 等 | 缝宽、圆孔半径、光栅周期扫描 |
 
