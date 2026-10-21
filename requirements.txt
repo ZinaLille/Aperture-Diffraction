@@ -1,6 +1,0 @@
-# Choose the appropriate PyTorch CPU/CUDA build for your platform first:
-# https://pytorch.org/get-started/locally/
-numpy
-matplotlib
-torch
-# Optional, only when enabling --lambda-ssim: torchmetrics or pytorch-msssim.

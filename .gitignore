@@ -5,13 +5,15 @@ __pycache__/
 venv/
 .vscode/
 
-# 运行产物（脚本可重新生成）
-/data/
-/runs/
-/results/
-/reports/
+# 运行产物：只提交目录占位，不提交数据本身
+/data/*
+!/data/.gitkeep
+/runs/*
+!/runs/.gitkeep
+/results/*
+!/results/.gitkeep
 
-# 权重与数据数组
+# 权重与数据数组（即使不在上述目录也不提交）
 *.pt
 *.pth
 *.ckpt
