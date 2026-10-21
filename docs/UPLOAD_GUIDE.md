@@ -93,3 +93,14 @@ git diff --cached --name-only
 检查暂存内容与`UPLOAD_MANIFEST.json`的清单相符，尤其确认没有原始数组、权重和本机审计JSON。本文没有替你创建Git仓库或操作远端。
 
 建议提交标题：`Complete multi-Fresnel forward experiments and independent RS1 validation`。
+
+## 7. 2026-10-21 目录整理（在本清单之后执行）
+
+本文第 6 节的“当前目录不是Git克隆目录”已过期：仓库现已建立`.git`并连接到远端。此后又做了一次仓库整理，以下约定取代上文对应描述：
+
+- 运行产物集中到 `run/`（权重与训练记录）和 `out/`（图片、指标与评估结果），阶段汇报与旧文档备份集中到 `reports/`；三者均由`.gitignore`排除，只保留`.gitkeep`占位。
+- 根目录四个早期脚本改用 `paths.py` 的路径约定，不再向根目录写文件。
+- 已用 `git rm --cached` 取消跟踪此前误提交的权重、图片、评估目录、PPT、缓存和编辑器设置，后续提交不再包含它们。
+- `docs/figures/` 存放 README 引用的三张历史图快照，随仓库发布。
+
+注意：取消跟踪只影响之后的提交，旧权重与图片仍留在既有提交历史中；完整删除需要重写历史并强制推送，本次没有执行。

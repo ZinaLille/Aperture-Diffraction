@@ -1,30 +1,48 @@
-# Python and editor files
+# ============================================================
+# 仓库只保留源码、文档与 docs/ 下精选的公开结果。
+# 以下内容都可由脚本重新生成，不进入 Git。
+# ============================================================
+
+# ---- Python / 编辑器 / 系统缓存 ----
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .venv/
 venv/
 .vscode/
+.idea/
+.DS_Store
+Thumbs.db
 
-# Generated arrays and model weights (keep selected figures/CSV under docs/)
-*.npy
-*.npz
+# ---- 运行产物：权重与训练记录（run/）----
+/run/*
+!/run/.gitkeep
 *.pt
 *.pth
 *.ckpt
+/checkpoints/
+/change_protection/
+/fresnel_runs/
+
+# ---- 运行产物：图片与评估结果（out/）----
+/out/*
+!/out/.gitkeep
+
+# ---- 数据数组（体积大，由 generate_data.py 生成）----
 /data/
 /fresnel_data/
-/fresnel_runs/
+*.npy
+*.npz
+
+# ---- 本机检查材料与阶段汇报（fresnel_* / reports/）----
 /fresnel_checks/
 /fresnel_reference/
 /fresnel_analysis/
-/eval_results/
-/comparison/
-
-# Local provenance records contain machine-specific paths
-/change_protection/
-/checkpoints/
+/reports/
 /publish_checks/
+
+# ---- 含本机路径的审计/发布快照 ----
 /fresnel_experiment/legacy_artifacts_before.json
 /fresnel_experiment/verification.json
 /fresnel_experiment/IMPLEMENTATION_REPORT.md

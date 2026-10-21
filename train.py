@@ -15,6 +15,7 @@ train.py (修正版)
 """
 
 import os
+import csv
 import numpy as np
 import torch
 import torch.nn as nn
@@ -22,13 +23,16 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 
+from paths import ensure_parent, out_path, run_path
+
 
 # ============================================================
 # 配置
 # ============================================================
 DATA_DIR = 'data'
-SAVE_PATH = 'best_model.pt'
-RESULT_PATH = 'train_result.png'
+SAVE_PATH = run_path('best_model.pt')       # 权重放在 run/
+HISTORY_PATH = run_path('history.csv')      # 逐轮损失记录放在 run/
+RESULT_PATH = out_path('train_result.png')  # 图片放在 out/
 
 BATCH_SIZE = 32
 EPOCHS = 50
@@ -402,7 +406,7 @@ def visualize(model, dataset, device, save_path='train_result.png', n_show=4):
         )
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=120, bbox_inches='tight')
+    plt.savefig(ensure_parent(save_path), dpi=120, bbox_inches='tight')
     plt.close()
     print(f"可视化保存到: {save_path}")
 
@@ -459,7 +463,7 @@ def plot_loss_curve(history, save_path='loss_curve.png'):
         ax.legend(); ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=120, bbox_inches='tight')
+    plt.savefig(ensure_parent(save_path), dpi=120, bbox_inches='tight')
     plt.close()
     print(f"Loss 曲线保存到: {save_path}")
 
@@ -559,6 +563,7 @@ def main():
     print("\n" + "=" * 60)
     print("开始训练")
     print("=" * 60)
+    ensure_parent(SAVE_PATH)
     best_val = float('inf')
     # ⬇️ 改 2: history 记录各项损失, 便于后续画多条曲线
     history = {
@@ -595,10 +600,19 @@ def main():
     
     print(f"\n训练完成，最佳验证 L1: {best_val:.6f}")
     print(f"模型保存到: {SAVE_PATH}")
-    
+
+    # ---------- 逐轮训练记录 (run/history.csv) ----------
+    with open(ensure_parent(HISTORY_PATH), 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        keys = list(history)
+        writer.writerow(['epoch'] + keys)
+        for epoch in range(EPOCHS):
+            writer.writerow([epoch + 1] + [history[k][epoch] for k in keys])
+    print(f"训练记录保存到: {HISTORY_PATH}")
+
     # ---------- Loss 曲线 ----------
     # ⬇️ 改 5: 传入新的 history 字典 (见下方新 plot_loss_curve)
-    plot_loss_curve(history, save_path='loss_curve.png')
+    plot_loss_curve(history, save_path=out_path('loss_curve.png'))
     
     # ---------- 加载最佳模型并可视化 ----------
     model.load_state_dict(torch.load(SAVE_PATH, map_location=DEVICE))

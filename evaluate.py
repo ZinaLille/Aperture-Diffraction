@@ -4,12 +4,12 @@ evaluate.py
 推理验证脚本。
 
 用法:
-    python evaluate.py                        # 用 data/ 下的数据
-    python evaluate.py --model best_model.pt  # 指定模型
-    python evaluate.py --data_dir data        # 指定数据目录
+    python evaluate.py                          # 用 data/ 和 run/best_model.pt
+    python evaluate.py --model run/best_model.pt  # 指定模型
+    python evaluate.py --data_dir data          # 指定数据目录
 
 输出:
-    eval_results/
+    out/eval_results/
     ├── samples.png            # 8 个样本的对比可视化
     ├── error_map.png          # 误差图
     ├── metrics.txt            # 定量指标
@@ -28,14 +28,15 @@ from matplotlib.gridspec import GridSpec
 
 # 从 train.py 导入模型定义
 from train import PhysicsGuidedModel, DiffractionDataset, Loss
+from paths import out_path, run_path
 
 
 # ============================================================
 # 参数
 # ============================================================
-DEFAULT_MODEL = 'best_model.pt'
+DEFAULT_MODEL = run_path('best_model.pt')
 DEFAULT_DATA_DIR = 'data'
-OUTPUT_DIR = 'eval_results'
+OUTPUT_DIR = out_path('eval_results')
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 

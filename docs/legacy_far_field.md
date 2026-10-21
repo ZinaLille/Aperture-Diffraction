@@ -2,7 +2,7 @@
 
 最初阅读README时，项目主要由根目录四个脚本组成：`generate_data.py`、`train.py`、`baseline.py`、`evaluate.py`。正向模型采用固定夫琅禾费FFT物理层与残差U-Net，尚未开展多距离传播和角谱换层对照。
 
-当前目录没有`.git`，本文依据早期文档、现有代码和保存结果对照，不声称对应某个远端commit。更新前完整README已在本机另存备份。
+当前仓库已建立`.git`；本文写于整理前，依据早期文档、现有代码和保存结果对照，不声称对应某个远端commit。更新前完整README已在本机另存备份。
 
 ## 早期实验流程
 
@@ -13,7 +13,7 @@ python evaluate.py
 python baseline.py all
 ```
 
-这组旧命令向旧`data/`、根目录权重、`comparison/`和`eval_results/`写入。复现当前多菲涅耳数实验请使用[新入口](../fresnel_experiment/README.md)，并选择新输出目录。
+这组旧命令从`data/`读取输入，把权重写入`run/`、把图片与评估结果写入`out/`（`out/eval_results/`、`out/comparison/`、`out/pix2pix_compare/`）。路径约定见根目录`paths.py`。复现当前多菲涅耳数实验请使用[新入口](../fresnel_experiment/README.md)，并选择新输出目录。
 
 旧生成器默认5000个256×256输入，八种几何策略，`APERTURE_NOISE=0.005`。加性扰动先施加到光阑，再由最终光阑计算标签；标签并未独立叠加观测噪声。整体乘性透过率缩放也不能直接等同于独立观测噪声。
 

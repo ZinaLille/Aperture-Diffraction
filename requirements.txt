@@ -3,4 +3,5 @@
 numpy
 matplotlib
 torch
+tqdm
 # Optional, only when enabling --lambda-ssim: torchmetrics or pytorch-msssim.

@@ -11,8 +11,8 @@
 
 ## 原有结果保护
 
-- 旧 `data/`、`comparison/`、`eval_results/`、根目录 `.pt` 和结果图均不作为新脚本的输出。
-- 新输出分别位于 `fresnel_checks/`、`fresnel_data/`、`fresnel_runs/`。
+- 旧 `data/` 与根目录脚本的产物（`run/`、`out/`、`reports/`）均不作为新脚本的输出。
+- 新输出仍分别位于 `fresnel_checks/`、`fresnel_data/`、`fresnel_runs/`，这些目录同样由 `.gitignore` 排除。
 - 所有输出根目录必须不存在；没有覆盖开关。再次运行请选择新目录。
 - 旧 `generate_data.py` 仅把创建目录和设置随机种子移进 `main()`，避免导入几何函数就创建旧数据目录。旧命令生成逻辑及默认参数不变。
 

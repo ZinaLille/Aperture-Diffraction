@@ -397,7 +397,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 | **图 3 · 角谱模型学习曲线** | [NF=3](docs/phase1_results/asm_nf3_loss_curve.png)、[NF=5](docs/phase1_results/asm_nf5_loss_curve.png) | 将训练 / 验证曲线与 epoch0 参考线一起看；曲线下降并不意味着超过未训练起点 |
 | **图 4 · 独立传播检查** | [rs1_physics_comparison.png](docs/phase1_results/rs1_physics_comparison.png) | 采用共同 RS 参照与同像素解释，检查角谱优势以及网格加密的影响 |
 | **图 5 · NF=5 八类示例** | [rs1_nf5_examples.png](docs/phase1_results/rs1_nf5_examples.png) | 同时查看光阑和图样；右栏横轴是观察点编号，并非空间剖面，Fraunhofer 曲线为原点采样 FFT |
-| **历史图 · 正向与基线训练** | [train_result.png](train_result.png)、[loss_curve.png](loss_curve.png)、[baseline_loss_curve.png](baseline_loss_curve.png) | 展示早期远场实验，不能替代当前多 $N_F$ 结果或证明新增网络收益 |
+| **历史图 · 正向与基线训练** | [train_result.png](docs/figures/train_result.png)、[loss_curve.png](docs/figures/loss_curve.png)、[baseline_loss_curve.png](docs/figures/baseline_loss_curve.png) | 展示早期远场实验，不能替代当前多 $N_F$ 结果或证明新增网络收益 |
 
 更多逐样本指标、完整图表与来源见[阶段结果索引](docs/phase1_results/README.md)。
 
@@ -529,13 +529,13 @@ python -m fresnel_experiment.train --data fresnel_data/demo --base-ch 8 --batch-
 
 ### 6.4 早期远场脚本
 
-根目录旧入口仍保留，默认读取、写入旧 `data/`、根目录权重与结果文件夹：
+根目录旧入口仍保留，默认从 `data/` 读数据，把权重写入 `run/`、把图片与评估结果写入 `out/`：
 
 ```bash
-python generate_data.py
-python train.py
-python evaluate.py
-python baseline.py all
+python generate_data.py     # 生成 data/（输入数据，不提交）
+python train.py             # 权重 -> run/，曲线与可视化 -> out/
+python evaluate.py          # 评估图与指标 -> out/eval_results/
+python baseline.py all      # 基线权重 -> run/，对比结果 -> out/comparison/
 ```
 
 已有旧结果的工作区不要直接用这组默认命令重新生成、训练；当前多菲涅耳数复现使用 6.2 节的新入口和新目录。旧实验的配置及解释修正见[历史远场实验说明](docs/legacy_far_field.md)。
@@ -546,6 +546,8 @@ python baseline.py all
 Aperture-Diffraction/
 ├── README.md                       # 项目总览、原理、阶段结果与运行说明
 ├── requirements.txt                # 核心依赖
+├── .gitignore                      # 只提交源码、文档与精选图
+├── paths.py                        # run/ 与 out/ 的路径约定
 ├── generate_data.py                # 早期生成器与八类几何函数
 ├── train.py                        # 早期物理模型；新模块复用 ConvBlock、Loss
 ├── baseline.py                     # 早期纯网络基线及对比
@@ -567,15 +569,27 @@ Aperture-Diffraction/
 │   ├── PHASE1_CHECKPOINT.md        # 当前阶段检查点
 │   ├── legacy_far_field.md         # 历史实验与解释修正
 │   ├── phase1_results/             # 公开 CSV、JSON、图表与来源
+│   ├── figures/                    # README 引用的历史图快照
 │   └── UPLOAD_GUIDE.md             # 首次发布文件范围说明
-├── comparison/ / eval_results/     # 已有早期对比与评估结果
-├── fresnel_data/                   # 运行生成，不随本次发布上传
-├── fresnel_runs/                   # 训练权重、逐样本指标、曲线与计时
-├── fresnel_reference/              # 冻结参照评估输出
-└── fresnel_checks/                 # 传播验证与独立 RS1 输出
+├── run/                            # 本机：权重与训练记录（不提交）
+├── out/                            # 本机：图片、指标与评估结果（不提交）
+└── reports/                        # 本机：阶段汇报 PPT 与备份（不提交）
 ```
 
-新模块仍依赖根目录 `generate_data.py` 和 `train.py`，请保留它们。新实验不向旧数据和训练结果目录写入；原始大数组、新权重与本机检查材料由 `.gitignore` 排除，精选展示结果另存于 `docs/phase1_results/`。
+### 6.6 本地目录约定
+
+| 目录 | 内容 | 是否进入 Git |
+|------|------|--------------|
+| `data/` | `generate_data.py` 生成的输入数组 | 否 |
+| `run/` | `best_model.pt`、`baseline_model.pt`、`history.csv` 等权重与训练记录 | 否 |
+| `out/` | 训练/评估图片、`metrics.txt`、参数扫描图 | 否 |
+| `reports/` | 阶段汇报 PPT 与旧文档备份 | 否 |
+| `fresnel_data/`、`fresnel_runs/`、`fresnel_checks/`、`fresnel_reference/` | 新入口的运行产物，目录由 `--out` 指定 | 否 |
+| `docs/phase1_results/`、`docs/figures/` | 精选的公开指标、图表与历史图快照 | 是 |
+
+`run/` 与 `out/` 里保留了 `.gitkeep`，因此克隆仓库后目录结构可见；其中的实际产物被 `.gitignore` 忽略，重新运行脚本即可再生成。如果希望某张新图也出现在 GitHub 上，把它复制到 `docs/figures/` 再提交。
+
+新模块仍依赖根目录 `generate_data.py` 和 `train.py`，请保留它们。新实验不向旧数据和训练结果目录写入；原始大数组、新权重与本机检查材料由 `.gitignore` 排除，精选展示结果另存于 `docs/phase1_results/` 与 `docs/figures/`。
 
 ---
 

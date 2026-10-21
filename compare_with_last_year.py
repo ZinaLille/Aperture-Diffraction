@@ -35,15 +35,16 @@ import matplotlib.pyplot as plt
 
 # 直接复用今年的数据类与模型
 from train import DiffractionDataset, PhysicsGuidedModel
+from paths import ensure_parent, out_path, run_path
 
 # ============================================================
 # 配置
 # ============================================================
 DATA_DIR = 'data'
-CURRENT_MODEL_PATH = 'best_model.pt'          # 由 train.py 生成
-PIX2PIX_MODEL_PATH = 'pix2pix_last_year.pt'   # 本脚本训练
-COMPARE_FIG        = 'compare_result.png'
-CURVE_FIG          = 'compare_curve.png'
+CURRENT_MODEL_PATH = run_path('best_model.pt')          # 由 train.py 生成
+PIX2PIX_MODEL_PATH = run_path('pix2pix_last_year.pt')   # 本脚本训练
+COMPARE_FIG        = out_path('pix2pix_compare', 'compare_result.png')
+CURVE_FIG          = out_path('pix2pix_compare', 'compare_curve.png')
 
 BATCH_SIZE = 8
 EPOCHS     = 30          # pix2pix 收敛相对较快, 30 轮足够展示差距
@@ -246,7 +247,7 @@ def train_pix2pix(train_set, val_set):
         print(f"Epoch {epoch+1:3d}/{EPOCHS}  "
               f"train L1={train_l1:.5f}  val L1={val_l1:.5f}")
 
-    torch.save(G.state_dict(), PIX2PIX_MODEL_PATH)
+    torch.save(G.state_dict(), ensure_parent(PIX2PIX_MODEL_PATH))
     print(f"去年 pix2pix 模型已保存: {PIX2PIX_MODEL_PATH}")
     return G, hist
 
@@ -331,7 +332,7 @@ def compare(current_model, pix2pix_G, val_set, n_show=5):
             fontsize=9)
 
     plt.tight_layout()
-    plt.savefig(COMPARE_FIG, dpi=120, bbox_inches='tight')
+    plt.savefig(ensure_parent(COMPARE_FIG), dpi=120, bbox_inches='tight')
     plt.close()
     print(f"对比图已保存: {COMPARE_FIG}")
 
@@ -375,7 +376,7 @@ def plot_curves(hist_pix2pix):
     plt.title('Last-year pix2pix training curve')
     plt.legend(); plt.grid(alpha=0.3)
     plt.tight_layout()
-    plt.savefig(CURVE_FIG, dpi=120, bbox_inches='tight')
+    plt.savefig(ensure_parent(CURVE_FIG), dpi=120, bbox_inches='tight')
     plt.close()
     print(f"曲线已保存: {CURVE_FIG}")
 

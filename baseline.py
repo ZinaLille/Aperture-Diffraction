@@ -39,10 +39,11 @@ from train import (
     BATCH_SIZE, EPOCHS, LR, VAL_RATIO, DEVICE,
     DATA_DIR, LOG_ALPHA, SAVE_PATH as PHYSICS_PATH,
 )
+from paths import ensure_parent, out_path, run_path
 
 
-BASELINE_PATH = 'baseline_model.pt'
-COMPARE_DIR = 'comparison'
+BASELINE_PATH = run_path('baseline_model.pt')   # 权重放在 run/
+COMPARE_DIR = out_path('comparison')            # 对比图与指标放在 out/
 
 # baseline 专用 LR
 BASELINE_LR = 3e-4
@@ -240,6 +241,7 @@ def train():
     print("\n" + "=" * 60)
     print("开始训练")
     print("=" * 60)
+    ensure_parent(BASELINE_PATH)
     best_val = float('inf')
     history = {'train': [], 'val': []}
 
@@ -273,9 +275,9 @@ def train():
     ax.set_xlabel('epoch')
     ax.set_ylabel('L1')
     plt.tight_layout()
-    plt.savefig('baseline_loss_curve.png', dpi=120)
+    plt.savefig(ensure_parent(out_path('baseline_loss_curve.png')), dpi=120)
     plt.close()
-    print("Loss 曲线保存到: baseline_loss_curve.png")
+    print(f"Loss 曲线保存到: {out_path('baseline_loss_curve.png')}")
 
 
 # ============================================================
