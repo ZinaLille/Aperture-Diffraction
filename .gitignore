@@ -1,45 +1,23 @@
-# ============================================================
-# 仓库只保留源码、Markdown 与少量必要配置。
-# 以下内容都可由脚本重新生成，不进入 Git。
-# ============================================================
-
-# ---- Python / 编辑器 / 系统缓存 ----
+# Python 缓存 / 虚拟环境 / 编辑器
 __pycache__/
 *.py[cod]
-*.egg-info/
-.pytest_cache/
 .venv/
 venv/
 .vscode/
-.idea/
-.DS_Store
-Thumbs.db
 
-# ---- 运行产物：权重、训练记录、图片、评估结果与归档 ----
+# 运行产物（脚本可重新生成）
 /run/
 /out/
 /reports/
+/data/
+/fresnel_data/
+/fresnel_runs/
+/fresnel_checks/
+/fresnel_reference/
+
+# 权重与数据数组
 *.pt
 *.pth
 *.ckpt
-/checkpoints/
-/change_protection/
-/fresnel_runs/
-
-# ---- 数据数组（体积大，由 generate_data.py 生成）----
-/data/
-/fresnel_data/
 *.npy
 *.npz
-
-# ---- 本机检查材料 ----
-/fresnel_checks/
-/fresnel_reference/
-/fresnel_analysis/
-/publish_checks/
-
-# ---- 含本机路径的审计/发布快照 ----
-/fresnel_experiment/legacy_artifacts_before.json
-/fresnel_experiment/verification.json
-/fresnel_experiment/IMPLEMENTATION_REPORT.md
-/fresnel_experiment/ASM_TIMING_REPORT.md
