@@ -4,7 +4,7 @@
 
 > 用「可微的物理模型 + 神经网络」研究 **光阑形状 ↔ 衍射图样** 的双向映射，分三个阶段推进。
 >
-> **当前进度（2026-10-21）**：阶段一已完成远场实验、多菲涅耳数对照、角谱物理层替换与独立积分验证；阶段二已建立骨架，正在搭建逆向网络。工程代码已合并为单包 `aperture/`。
+> **当前进度（2026-10-21）**：阶段一已完成远场实验、多菲涅耳数对照、角谱物理层替换与独立积分验证；阶段二尚未开始，计划见[阶段二说明](docs/phase2/README.md)。工程代码已合并为单包 `aperture/`，只有 generate / train / evaluate 三个入口。
 
 ---
 
@@ -15,7 +15,7 @@
 | 阶段 | 目标 | 关键方法 | 状态 |
 |------|------|----------|------|
 | **阶段一** | 正向预测：输入光阑与传播条件，输出衍射图样；判断物理层和网络分别带来多少收益 | 可微传播层 + 残差 U-Net；多菲涅耳数对照；独立 RS1 积分验证 | ✅ 已完成当前理想仿真实验 |
-| **阶段二** | 逆向预测：输入衍射图样，恢复光阑形状 | 逆网络 + 可微正向约束，结合光阑监督与先验 | 🚧 进行中（骨架已建） |
+| **阶段二** | 逆向预测：输入衍射图样，恢复光阑形状 | 逆网络 + 可微正向约束，结合光阑监督与先验 | 📝 计划中 |
 | **阶段三** | 构建双向预测系统，研究跨数据集及外界干扰下的鲁棒性 | 正逆向联合训练、系统偏差与干扰建模 | ⏳ 待开展 |
 
 本次新增的多菲涅耳数、角谱换层和独立积分检查，均属于**阶段一的扩展与验证**，不代表已经进入逆向重建或含噪双向预测。
@@ -26,12 +26,12 @@
 |------|------|------|
 | 二 | 理论基础：数据表示、菲涅耳数、传播模型与可微物理层 | 已填写 |
 | **三** | **阶段一：数据、网络、损失、训练、结果及图表解读** | ✅ 已填写 |
-| 四 | 阶段二：逆向预测 | 🚧 进行中（骨架已建） |
+| 四 | 阶段二：逆向预测 | 📝 计划中 |
 | 五 | 阶段三：双向网络与鲁棒性 | 📝 预留区域 |
 | 六 | 运行说明：环境、复现步骤、文件结构 | 已填写 |
 | 七 | 资料索引与说明 | 已填写 |
 
-> 文字文档按阶段放在 `docs/phase1/` 与 `docs/phase2/`；运行说明见 `docs/phase1/running.md`，二期骨架见 `aperture/inverse.py`。
+> 文字文档按阶段放在 `docs/phase1/` 与 `docs/phase2/`；运行说明见 `docs/phase1/running.md`，二期计划见 `docs/phase2/README.md`。
 
 ### 1.3 实现目的
 
@@ -418,7 +418,7 @@ PSNR 的 dB 是对无量纲比值的对数表示，不是光强单位；代码�
 
 ## 四、阶段二：逆向预测（衍射 → 光阑）
 
-> 🚧 **进行中。** 代码骨架已建立在 `aperture/inverse.py`，数据契约与评估口径见[阶段二说明](docs/phase2/README.md)；目前尚无训练结果。
+> 📝 **计划中。** 阶段二尚未建立代码文件；数据契约与评估口径见[阶段二说明](docs/phase2/README.md)。
 
 - 搭建逆网络 $G_\phi$，输入衍射图样及已知传播条件，输出光阑预测 $\hat a$。
 - 将 $\hat a$ 送入固定、可微的正向传播层，约束重建图样与观测一致。
@@ -455,79 +455,95 @@ python -m unittest tests.test_physics -v
 
 > 所有新实验的输出根目录必须不存在。再次运行请更换输出名称，以保留已有数据和训练结果。1000 个 $256\times256$ 原始光阑对应的全部新数据数组约占 4.2 GB。
 
-### 6.2 当前多菲涅耳数实验：完整复现顺序
+### 6.2 完整复现：三条命令
 
-#### 第一步：传播验证
+第一阶段只有三个入口：
 
-```bash
-python -m aperture.forward validate --out results/forward/checks/reproduce_v1
-```
+| 命令 | 作用 |
+|------|------|
+| `python -m aperture.generate` | 内部先做传播验证，再生成七组 NF 数据 |
+| `python -m aperture.train` | 训练 physics / baseline；可先 `--dry-run` |
+| `python -m aperture.evaluate` | 纯物理参照与冻结模型对比；加 `--rs1` 做独立审计 |
 
-生成传播自检、补零 / 加密检查和独立积分抽查的报告。数据生成器只接受通过检查且物理配置匹配的报告。
-
-#### 第二步：生成共享光阑与七组标签
-
-```bash
-python -m aperture.forward generate --samples 1000 --validation results/forward/checks/reproduce_v1/validation.json --out data/forward/reproduce_v1
-```
-
-`--samples` 指原始光阑数，每一组都有同样数量的样本。输入、标签和元数据的对应方式见 3.3 节。
-
-#### 第三步：训练前只读检查
+#### 1. 生成数据
 
 ```bash
-python -m aperture.forward train --data data/forward/reproduce_v1 --dry-run
+python -m aperture.generate --samples 1000 --out data/forward/v1
 ```
 
-检查文件身份、划分、前向计算和零残差初始化。`--dry-run` 不训练、不创建运行输出目录；旧物理层与近场标签存在差异会如实报告，不会因此强行中止实验。
+`--samples` 指原始光阑数，七组共用同一批光阑。传播验证在生成前自动执行，报告写在 `data/forward/v1/validation.json`；不通过就不会写入训练数组。输出结构：
 
-#### 第四步：原夫琅禾费模型与基线训练
+```text
+data/forward/v1/
+├── manifest.json              # 最后写；status=complete 才能训练
+├── validation.json
+├── apertures.npy              # 各组共享输入
+├── fraunhofer_patterns.npy
+├── splits.npz                 # 808 / 96 / 96
+└── nf_0p01/ ... nf_5/
+    ├── patterns.npy           # log 标签
+    ├── patterns_linear.npy
+    ├── metadata.json
+    └── preview.png
+```
+
+#### 2. 训练
+
+先做只读检查：
 
 ```bash
-# 可先运行 NF=1 一组
-python -m aperture.forward train --data data/forward/reproduce_v1 --groups 1 --epochs 50 --out runs/forward/reproduce_nf1
-
-# 七组分别训练物理残差模型与纯网络基线
-python -m aperture.forward train --data data/forward/reproduce_v1 --epochs 50 --out runs/forward/reproduce_fft
+python -m aperture.train --data data/forward/v1 --dry-run
 ```
 
-两条命令是独立运行。第一条可用于先熟悉训练流程；第二条生成后续完整对照所需的七组权重。
-
-#### 第五步：加入纯角谱与冻结模型参照
+再先跑一组确认速度：
 
 ```bash
-python -m aperture.audit reference --data data/forward/reproduce_v1 --compare-run runs/forward/reproduce_fft --out results/forward/reference/reproduce_v1
+python -m aperture.train --data data/forward/v1 --groups 1 --out runs/forward/nf1_v1
 ```
 
-只读数据与已有最佳权重，不更新模型。默认角谱参照使用双精度；与单精度神经网络比较速度时，需要注意精度和计时范围的差别。
-
-#### 第六步：重点两组的角谱残差训练
+七组分别训练 physics 与 baseline（各 50 轮）：
 
 ```bash
-python -m aperture.forward train --data data/forward/reproduce_v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --out runs/forward/reproduce_asm
+python -m aperture.train --data data/forward/v1 --out runs/forward/v1
 ```
 
-这是复现换层对照的配置，并不意味着当前结果需要自动增加训练轮数。请结合 `initial_val.json`、`selection.json` 和学习曲线判断是否超过 epoch0。
+最佳模型只按验证集空间 L1 选择，epoch0 也参与；测试集只在选好权重后评估。产物在 `runs/forward/v1/nf_*/{physics,baseline}/`，包含 `best_model.pt`、`history.csv`、`selection.json`、`test_metrics.json`、曲线和样例图。
 
-#### 第七步：独立 RS1 验证
+可选：重点两组的角谱换层对照
 
 ```bash
-python -m aperture.audit rs1 --data data/forward/reproduce_v1 --old-run runs/forward/reproduce_fft --asm-run runs/forward/reproduce_asm --out results/forward/checks/reproduce_rs1
+python -m aperture.train --data data/forward/v1 --groups 3 5 --models physics \
+    --propagator asm --epochs 10 --batch-size 4 --out runs/forward/asm_v1
 ```
 
-生成新光阑，冻结网络，仅进行独立传播与收敛检查。三个输入路径必须对应前面实际生成的数据和运行目录。完整参数说明见[多菲涅耳数运行文档](docs/phase1/running.md)与[RS1 验证说明](docs/phase1/running.md)。
+#### 3. 评估
+
+```bash
+python -m aperture.evaluate --data data/forward/v1 \
+    --run runs/forward/v1 --out results/forward/eval_v1
+```
+
+默认比较纯夫琅禾费、纯角谱和训练好的权重，输出 `summary.csv`、逐样本 CSV、样例图与 `report.md`。省略 `--run` 则只评估纯物理参照。
+
+独立 RS1 审计（24 个新光阑、72 例积分收敛检查）：
+
+```bash
+python -m aperture.evaluate --rs1 --data data/forward/v1 \
+    --run runs/forward/v1 --asm-run runs/forward/asm_v1 \
+    --out results/forward/rs1_v1
+```
 
 ### 6.3 小规模流程检查
 
-如需先确认环境和入口可运行，可使用 64×64 网格、24 个原始光阑，每组每模型训练 1 轮：
+先用 64×64、24 个光阑走一遍三条命令：
 
 ```bash
-python -m aperture.forward validate --grid 64 --out results/forward/checks/demo
-python -m aperture.forward generate --grid 64 --samples 24 --validation results/forward/checks/demo/validation.json --out data/forward/demo
-python -m aperture.forward train --data data/forward/demo --base-ch 8 --batch-size 4 --epochs 1 --out runs/forward/demo
+python -m aperture.generate --grid 64 --samples 24 --out data/forward/demo
+python -m aperture.train --data data/forward/demo --base-ch 8 --batch-size 4 --epochs 1 --out runs/forward/demo
+python -m aperture.evaluate --data data/forward/demo --out results/forward/demo
 ```
 
-小网格可能改变几何细节，只用于检查流程，不能作为正式模型性能结论。
+小网格只用于检查流程，不能作为模型性能结论。
 
 ### 6.4 早期远场实验的归档
 
@@ -554,9 +570,9 @@ Aperture-Diffraction/
 │   ├── physics.py                  # NumPy 传播、指标、RS1 + 可微 ASM
 │   ├── apertures.py                # 八类几何、划分与几何辅助函数
 │   ├── models.py                   # ConvBlock、U-Net、残差模型、Loss
-│   ├── forward.py                  # 阶段一：validate / generate / train
-│   ├── audit.py                    # 阶段一：reference / rs1
-│   └── inverse.py                  # 阶段二：逆向（骨架）
+│   ├── generate.py                 # 阶段一：内部验证 + 生成七组数据
+│   ├── train.py                    # 阶段一：训练 physics / baseline
+│   └── evaluate.py                 # 阶段一：纯物理参照、模型对比、--rs1 审计
 ├── tests/
 │   └── test_physics.py             # 11 个物理与流水线测试
 ├── docs/                           # 随仓库发布的文字文档
@@ -592,7 +608,7 @@ Aperture-Diffraction/
 - [阶段一公开检查点](docs/phase1/CHECKPOINT.md)：已完成范围、核验与尚未开展的工作。
 - [阶段二说明](docs/phase2/README.md)：逆向任务的目标、数据契约与评估口径。
 - [多菲涅耳数运行说明](docs/phase1/running.md)：物理约定、训练参数与输出字段。
-- [独立 RS1 验证说明](docs/phase1/running.md)：观察点、积分加密与指标口径。
+- [运行与审计说明](docs/phase1/running.md)：三个入口、物理约定与输出字段。
 - [早期远场实验说明](docs/phase1/legacy_far_field.md)：早期实验记录、历史指标与解释修正。
 
 本项目当前使用仿真数据，尚无真实实验测量验证。结果应结合传播近似、离散精度、标签来源与对照配置理解；正向低误差并不等于已经解决逆问题或证明残差网络具有额外收益。

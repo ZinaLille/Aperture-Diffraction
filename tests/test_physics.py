@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 from aperture.apertures import STRATEGIES, make_aperture, split_ids
-from aperture.audit import (detector_indices, physical_metrics,
+from aperture.evaluate import (detector_indices, physical_metrics,
                             integrate_reference, fraunhofer_cell_raw)
 from aperture.physics import (PhysicsConfig, check_nf, geometry, postprocess,
                               angular_spectrum_raw, rayleigh_sommerfeld_points)

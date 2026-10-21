@@ -1,6 +1,6 @@
 # 阶段二：逆向预测（衍射图样 → 光阑）
 
-状态：**进行中**。代码骨架在 `aperture/inverse.py`，尚未产生训练结果。
+状态：**计划中**。尚未建立代码文件；实现时新增 `aperture/inverse.py` 即可，训练与评估复用现有 `utils/physics/models`。
 
 ## 目标
 

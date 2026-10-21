@@ -1,8 +1,9 @@
-"""Stage-one evaluation: pure-ASM reference and independent RS1 audit.
+"""Evaluate trained models, pure-physics references and the independent RS1 audit.
 
 Usage:
-    python -m aperture.audit reference --data data/forward/v1 ...
-    python -m aperture.audit rs1 --data data/forward/v1 ...
+    python -m aperture.evaluate --data data/forward/v1 --run runs/forward/all_v1 --out results/forward/eval_v1
+    python -m aperture.evaluate --rs1 --data data/forward/v1 --run runs/forward/all_v1 \
+        --asm-run runs/forward/asm_nf3_nf5_e10_v1 --out results/forward/rs1_v1
 """
 import argparse
 import hashlib
@@ -19,16 +20,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from .apertures import STRATEGIES, make_aperture
-from .forward import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
 from .models import ForwardModel, FraunhoferDetectorLayer
 from .physics import (PhysicsConfig, AngularSpectrumDetectorLayer,
-                      check_nf, group_name, geometry, postprocess,
+                      check_nf, group_name, geometry, postprocess, image_metrics,
                       fraunhofer_raw, angular_spectrum_raw,
                       rayleigh_sommerfeld_points)
+from .train import GroupData, choose_device, check_dataset, aggregate_rows, write_csv
 from .utils import (new_output, read_json, write_json, sha256,
                     StageTimer, synchronize, duration, utc_now)
 
-matplotlib.use("Agg")
+
 
 
 def predict(model, aperture, condition, z, pure):
@@ -126,7 +127,7 @@ def main_reference():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", default="data/forward/v1")
     parser.add_argument("--out", default="results/forward/reference/asm_v1")
-    parser.add_argument("--compare-run", type=Path, help="Read existing best checkpoints for a fair new inference pass")
+    parser.add_argument("--run", type=Path, help="Trained run to compare; omit for pure-physics only")
     parser.add_argument("--groups", type=float, nargs="+")
     parser.add_argument("--splits", choices=("val", "test"), nargs="+", default=("val", "test"))
     parser.add_argument("--precision", choices=("float32", "float64"), default="float64")
@@ -139,8 +140,8 @@ def main_reference():
     root = Path(args.data).resolve()
     manifest = read_json(root/"manifest.json")
     check_dataset(root, manifest)
-    if args.compare_run:
-        previous = read_json(args.compare_run/"run_config.json")
+    if args.run:
+        previous = read_json(args.run/"run_config.json")
         if previous["dataset_manifest_sha256"] != sha256(root/"manifest.json"):
             parser.error("Comparison run used a different dataset manifest")
     groups = manifest["groups"]
@@ -152,7 +153,7 @@ def main_reference():
     device = choose_device(args.device)
     out = new_output(args.out)
     config = PhysicsConfig(**manifest["config"])
-    write_json(out/"run_config.json", {"arguments": {**vars(args), "compare_run": str(args.compare_run) if args.compare_run else None},
+    write_json(out/"run_config.json", {"arguments": {**vars(args), "run": str(args.run) if args.run else None},
                "dataset_manifest_sha256": sha256(root/"manifest.json"), "started_at_utc": utc_now(),
                "note": "Same-operator consistency reference, not independent evidence of learned network value.",
                "timing_scope": "CUDA-synchronized forward including intensity postprocess; excludes warmup, loading, transfers, metrics, checkpoint construction and plotting."})
@@ -169,9 +170,9 @@ def main_reference():
             check = numerical_check(asm, dataset, device)
             checks.append({"nf": nf, "split": split, **check})
             candidates = [("fraunhofer_only", far, True), ("angular_spectrum_only", asm, True)]
-            if args.compare_run:
+            if args.run:
                 for kind in ("physics", "baseline"):
-                    path = args.compare_run/name/kind
+                    path = args.run/name/kind
                     if not (path/"best_model.pt").exists():
                         raise FileNotFoundError(f"Comparison checkpoint missing: {path}")
                     candidates.append(("trained_"+kind, load_frozen(path, dataset, device), False))
@@ -209,10 +210,6 @@ def main_reference():
               "旧训练未记录时间，不能从现有日志恢复其真实训练耗时。新计时仅影响后续新训练。", "", "![对比](test_mae_comparison.png)"]
     (out/"report.md").write_text("\n".join(lines), encoding="utf-8")
     print(f"Reference complete: {out}; total {duration(elapsed)}")
-
-
-matplotlib.use("Agg")
-
 
 
 def aperture_hash(a):
@@ -378,7 +375,7 @@ def figures(out, apertures, meta, previews, summaries):
 def main_rs1():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data", type=Path, default=Path("data/forward/v1"))
-    parser.add_argument("--old-run", type=Path, default=Path("runs/forward/all_first"))
+    parser.add_argument("--run", type=Path, default=Path("runs/forward/all_v1"))
     parser.add_argument("--asm-run", type=Path, default=Path("runs/forward/asm_nf3_nf5_e10_v1"))
     parser.add_argument("--out", default="results/forward/checks/rs1_audit_v1")
     parser.add_argument("--groups", type=float, nargs="+", default=(0.03, 3, 5))
@@ -395,7 +392,7 @@ def main_rs1():
     nf_values = check_nf(args.groups)
     manifest = read_json(args.data/"manifest.json")
     check_dataset(args.data, manifest)
-    for run in (args.old_run, args.asm_run):
+    for run in (args.run, args.asm_run):
         if read_json(run/"run_config.json")["dataset_manifest_sha256"] != sha256(args.data/"manifest.json"):
             raise ValueError("Frozen run and audit source dataset disagree")
     if any(nf not in [g["nf"] for g in manifest["groups"]] for nf in nf_values):
@@ -416,7 +413,7 @@ def main_rs1():
                   "point_selection": "fixed central grid and rings; union of 3x3 around FFT and ASM peaks; shared across solvers/levels",
                   "reference": "direct RS1 midpoint quadrature, including 1/(kr), complex128 numpy; independent of FFT propagation",
                   "matched_cell_control": "fraunhofer_cells analytically integrates square constant pixels via the sinc envelope; asm_better refers to this control",
-                  "code_sha256": {name: sha256(Path(__file__).parent/name) for name in ("audit.py","forward.py","models.py","physics.py","utils.py")},
+                  "code_sha256": {name: sha256(Path(__file__).parent/name) for name in ("evaluate.py","train.py","models.py","physics.py","utils.py")},
                   "primary_normalization": "one max(RS at all sampled points) shared by every physical method; no individual peak fit",
                   "convergence": "2->4->8 then adaptive 16/32 if requested; changes are empirical indicators, not rigorous error bounds",
                   "network_scope": "auxiliary normalized-log sampled errors; reference full-image peak estimated from sampled points, no raw intensity recovery",
@@ -426,8 +423,8 @@ def main_rs1():
     for nf in nf_values:
         dataset = GroupData(args.data, group_name(nf), "val")
         models = {}
-        for method, run, kind in (("fft_residual",args.old_run,"physics"),
-                                  ("baseline",args.old_run,"baseline"),
+        for method, run, kind in (("fft_residual",args.run,"physics"),
+                                  ("baseline",args.run,"baseline"),
                                   ("asm_residual",args.asm_run,"physics")):
             folder = run/group_name(nf)/kind
             if method == "asm_residual" and not (folder/"best_model.pt").exists():
@@ -538,14 +535,12 @@ def main_rs1():
     print(f"Audit complete: {out}; {complete}", flush=True)
 
 
-COMMANDS = {"reference": main_reference, "rs1": main_rs1}
-
-
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-        print("usage: python -m aperture.audit {reference|rs1} [options]")
-        raise SystemExit(2)
-    COMMANDS[sys.argv.pop(1)]()
+    if "--rs1" in sys.argv[1:]:
+        sys.argv.remove("--rs1")
+        main_rs1()
+    else:
+        main_reference()
 
 
 if __name__ == "__main__":
