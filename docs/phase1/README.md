@@ -68,4 +68,4 @@ NF≥0.1 的标签由同一角谱计算生成，因此接近零的结果首先�
 
 ## 说明
 
-以上数字来自维护者已完成的运行。逐例明细（RS1 每例指标、辅助网络比较、环境与配置）保存在本机 `reports/phase1/results/`，不随仓库发布。数值口径与适用边界见[RS1 说明](../../src/forward/RS1_AUDIT_README.md)与[阶段检查点](CHECKPOINT.md)。
+以上数字来自维护者已完成的运行。逐例明细（RS1 每例指标、辅助网络比较、环境与配置）保存在本机 `reports/phase1/results/`，不随仓库发布。数值口径与适用边界见[运行与审计说明](running.md)与[阶段检查点](CHECKPOINT.md)。

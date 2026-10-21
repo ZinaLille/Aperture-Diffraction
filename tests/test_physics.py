@@ -1,18 +1,21 @@
-"""Numerical/identity/safety checks; run with python -m unittest ..."""
+"""Physics, split and stage-one pipeline checks."""
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import unittest
 import time
+import unittest
+from pathlib import Path
 from unittest.mock import patch
-import numpy as np
-from src.common.physics import (PhysicsConfig, check_nf, geometry, postprocess,
-                                angular_spectrum_raw, rayleigh_sommerfeld_points)
-from src.common.apertures import STRATEGIES, make_aperture, split_ids
-from src.common.io_utils import new_output
 
+import numpy as np
+
+from aperture.apertures import STRATEGIES, make_aperture, split_ids
+from aperture.audit import (detector_indices, physical_metrics,
+                            integrate_reference, fraunhofer_cell_raw)
+from aperture.physics import (PhysicsConfig, check_nf, geometry, postprocess,
+                              angular_spectrum_raw, rayleigh_sommerfeld_points)
+from aperture.utils import new_output
 
 class PipelineTests(unittest.TestCase):
     def test_nf_limits(self):
@@ -29,12 +32,12 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(FileExistsError): new_output(output)
             self.assertEqual(marker.read_text(), "untouched")
 
-    def test_import_does_not_create_legacy_data(self):
+    def test_import_does_not_create_data(self):
         root = str(Path(__file__).resolve().parents[1])
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder:
             self.assertTrue(Path(folder).resolve().is_relative_to(Path(__file__).resolve().parent))
             env = dict(os.environ, PYTHONPATH=root, PYTHONDONTWRITEBYTECODE="1")
-            result = subprocess.run([sys.executable, "-c", "import legacy.generate_data; import pathlib; assert not pathlib.Path('data').exists()"],
+            result = subprocess.run([sys.executable, "-c", "import aperture.apertures; import pathlib; assert not pathlib.Path('data').exists()"],
                                     cwd=folder, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -67,7 +70,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_zero_residual_and_physics_gradient(self):
         import torch
-        from src.forward.models import ForwardModel
+        from aperture.models import ForwardModel
         torch.manual_seed(42)
         model = ForwardModel("physics", base_ch=8)
         a = torch.rand(2, 1, 32, 32, requires_grad=True)
@@ -83,7 +86,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_torch_asm_matches_numpy_and_has_gradients(self):
         import torch
-        from src.common.torch_physics import AngularSpectrumDetectorLayer
+        from aperture.physics import AngularSpectrumDetectorLayer
         torch.set_num_threads(4)
         cfg = PhysicsConfig(grid=32)
         yy, xx = np.indices((32, 32))
@@ -106,12 +109,44 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaises(ValueError): layer(value, [-1])
 
     def test_stage_timer_sync_boundaries(self):
-        from src.common.timing import StageTimer
-        with patch("src.common.timing.synchronize") as sync:
+        from aperture.utils import StageTimer
+        with patch("aperture.utils.synchronize") as sync:
             with StageTimer("cuda") as timer:
                 sum(range(1000))
             self.assertEqual(sync.call_count, 2)
             self.assertGreaterEqual(timer.seconds, 0)
+
+
+class AuditTests(unittest.TestCase):
+    def test_common_scale_preserves_amplitude_error(self):
+        ref = np.array([0., 1., .5])
+        self.assertEqual(physical_metrics(ref, ref)["linear_mae_ref_peak"], 0)
+        self.assertAlmostEqual(physical_metrics(2*ref, ref)["linear_mae_ref_peak"], .5)
+        self.assertGreater(physical_metrics(2*ref, ref)["common_log_mae"], 0)
+
+    def test_point_coordinates_cover_peaks_and_bounds(self):
+        value = np.zeros((32,32)); value[0,31] = 1
+        points = detector_indices(32, (value,))
+        self.assertEqual(len(points), len(set(map(tuple, points))))
+        self.assertTrue(((points >= 0)&(points < 32)).all())
+        self.assertIn((16,16), set(map(tuple, points)))
+        self.assertIn((0,31), set(map(tuple, points)))
+
+    def test_rs_single_pixel_far_field_matches_cell_sinc(self):
+        cfg = PhysicsConfig(grid=32)
+        a = np.zeros((32,32)); a[16,16] = 1
+        z = geometry(a, .001, cfg)["z_m"]
+        offsets = np.array([[0,0],[3,0],[0,7],[10,10]])
+        xy = offsets*cfg.wavelength_m*z/(32*cfg.input_pitch_m)
+        # A single pixel has strong high-frequency content: c32 is deliberately
+        # insufficient at these outer points. Require the gate to reject it.
+        _, _, coarse_passed = integrate_reference(a,z,xy,cfg,32,5e-4,2e-4)
+        self.assertFalse(coarse_passed)
+        ref, steps, passed = integrate_reference(a,z,xy,cfg,64,5e-4,2e-4)
+        expected = fraunhofer_cell_raw(a,z,cfg)[16+offsets[:,1],16+offsets[:,0]]
+        self.assertTrue(passed)
+        self.assertGreaterEqual(len(steps), 3)
+        self.assertLess(np.max(abs(ref[-1]-expected))/expected.max(), 5e-4)
 
 
 if __name__ == "__main__":

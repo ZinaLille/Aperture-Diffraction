@@ -4,16 +4,15 @@
 
 当前仓库已建立`.git`；本文写于整理前，依据早期文档、现有代码和保存结果对照，不声称对应某个远端commit。更新前完整README已在本机另存备份。
 
-## 早期实验流程
+## 早期实验流程（脚本已移除）
+
+早期远场实验的四个脚本（`generate_data.py`、`train.py`、`baseline.py`、`evaluate.py`）与 pix2pix 对照脚本已从当前工程移除，需要查阅时可用 Git 历史：
 
 ```bash
-python -m legacy.generate_data
-python -m legacy.train
-python -m legacy.evaluate
-python -m legacy.baseline all
+git show legacy-farfield:legacy/train.py
 ```
 
-这组旧命令从`data/forward/legacy/`读取输入，把权重写入`runs/forward/legacy/`、把图片与评估结果写入`results/forward/legacy/`（`eval_results/`、`comparison/`、`pix2pix_compare/`）。路径约定见`src/common/paths.py`。复现当前多菲涅耳数实验请使用[新入口](../../src/forward/README.md)，并选择新输出目录。
+它们生成的 5000 对数据保留在 `data/forward/legacy_v1/`，权重与图表分别在 `runs/forward/legacy/`、`results/forward/legacy/`。几何函数已并入 `aperture/apertures.py`；当前多菲涅耳数实验的入口见[运行说明](running.md)。
 
 旧生成器默认5000个256×256输入，八种几何策略，`APERTURE_NOISE=0.005`。加性扰动先施加到光阑，再由最终光阑计算标签；标签并未独立叠加观测噪声。整体乘性透过率缩放也不能直接等同于独立观测噪声。
 

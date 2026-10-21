@@ -1,22 +1,26 @@
-# 第一阶段：多菲涅耳数组正向预测
+# 阶段一：运行与审计说明
+
+本页是阶段一的操作说明，由原 `src/forward/README.md` 与 `RS1_AUDIT_README.md` 合并而来。代码入口是 `aperture/forward.py`（传播验证、数据生成、训练）与 `aperture/audit.py`（纯角谱参照、独立 RS1 审计）。
+
+## 第一阶段：多菲涅耳数组正向预测
 
 截至2026-10-16，多菲涅耳数理想正向预测及收益归因阶段已完成。最初的前四步已扩展为：数据与传播验证、原物理层/基线训练、角谱换层、独立RS1审计及训练计时。
 默认网络物理层仍为夫琅禾费模型，可显式选择角谱或hybrid；没有进入逆向重建。
 
-公开进度见[阶段检查点](../../docs/phase1/CHECKPOINT.md)，完整指标、图和配置见[轻量结果](../../docs/phase1/README.md)。这些是已完成运行的记录，GitHub不附带工作数据和权重；首次克隆请按[项目主页的完整复现顺序](../../README.md)生成数据并训练。
+公开进度见[阶段检查点](CHECKPOINT.md)，完整指标、图和配置见[结果记录](README.md)。这些是已完成运行的记录，GitHub不附带工作数据和权重；首次克隆请按[项目主页的完整复现顺序](../../README.md)生成数据并训练。
 
 维护者本机已生成正式首批 `data/forward/v1/`：1000个原始光阑，每组1000对样本，七组共7000对。
 每组共享808/96/96的训练/验证/测试划分。已有数据时直接跳到“训练前只读检查”和“自行开始训练”。
 重新生成时请把输出改为新目录（如 `data/forward/v2`），不能重复使用v1。
 
-## 原有结果保护
+### 原有结果保护
 
-- 早期远场脚本的产物（`data/forward/legacy/`、`runs/forward/legacy/`、`results/forward/legacy/`）不作为本包输出。
+- 早期远场实验的产物（`data/forward/legacy_v1/`、`runs/forward/legacy/`、`results/forward/legacy/`）不作为本包输出。
 - 本包输出统一在 `data/forward/`、`runs/forward/`、`results/forward/checks/` 与 `results/forward/reference/`，均由 `.gitignore` 排除。
 - 所有输出根目录必须不存在；没有覆盖开关。再次运行请选择新目录。
-- `legacy/generate_data.py` 仅把创建目录和设置随机种子移进 `main()`，避免导入几何函数就创建旧数据目录。旧命令生成逻辑及默认参数不变。
+- 早期生成器的几何函数已并入 `aperture/apertures.py`，导入时不会创建数据目录。
 
-## 物理约定
+### 物理约定
 
 默认输入为 256×256，输入像素间距 10 μm，波长 532 nm。
 `D` 定义为光阑非零像素包围盒中较长的轴向跨度（包含像素宽度及孔间距），不是单孔半径。
@@ -46,7 +50,7 @@ NF 必须在 (0,5]；0.1 是本实验的方法切换点，不是普适物理分�
 它仍有有限窗口和离散积分误差，不宣称连续精确解；验证包括补零加倍、积分网格加密、独立 RS1 积分抽查。
 参考与远场点采样 FFT 还存在像素面积积分差异，验证报告会显示这些误差。
 
-## 运行环境
+### 运行环境
 
 需要 Python、numpy、matplotlib、torch。
 本机已验证Python 3.11.16、NumPy 1.23.5、Matplotlib 3.7.2、PyTorch 2.14.0+cu130，可运行RTX 5070 Laptop GPU的FFT、卷积和反向传播。
@@ -62,12 +66,12 @@ conda activate d2l
 默认两种模型均使用 `L1 + 0.1*频域log幅度L1`，SSIM 默认共同关闭。
 若给 `--lambda-ssim 0.2`，须安装 torchmetrics 或 pytorch-msssim；请求 SSIM 但依赖不可用时会报错，而不是静默改变配置。
 
-以下命令在项目根目录运行；无需执行旧 generate_data.py/train.py/baseline.py。
+以下命令在项目根目录运行；无需运行已移除的早期脚本。
 
-## 1. 传播验证
+### 1. 传播验证
 
 ```powershell
-python -m src.forward.validate --out results/forward/checks/v1
+python -m aperture.forward validate --out results/forward/checks/v1
 ```
 
 输出 `validation.json`、逐形状指标 CSV、传播图及误差随 NF 的曲线。
@@ -75,10 +79,10 @@ python -m src.forward.validate --out results/forward/checks/v1
 默认验收阈值：远场/切换点 log图 MAE<0.005，补零/加密 log图 MAE<0.002，独立积分抽查的峰值归一化最大误差<2%。
 这些是数值验收阈值，不是预测性能承诺或普适物理阈值。
 
-## 2. 生成数据
+### 2. 生成数据
 
 ```powershell
-python -m src.forward.generate --samples 1000 --validation results/forward/checks/v1/validation.json --out data/forward/v1
+python -m aperture.forward generate --samples 1000 --validation results/forward/checks/v1/validation.json --out data/forward/v1
 ```
 
 1000 是原始光阑数量，同一批光阑共享到七个 NF 组，各组分别有 1000 对输入/标签。
@@ -102,28 +106,28 @@ data/forward/v1/
 分层按八类形状划分约80/10/10（每类至少1个验证和测试样本）。同一原始光阑在任何 NF 组的归属都不变。
 完整 `manifest.json` 只在全部生成成功后写入；未完成的数据不能训练。
 
-## 3. 训练前只读检查
+### 3. 训练前只读检查
 
 ```powershell
-python -m src.forward.train --data data/forward/v1 --dry-run
+python -m aperture.forward train --data data/forward/v1 --dry-run
 ```
 
 检查文件身份、划分隔离、输入/标签/元数据ID、模型前向、零残差初始化；打印各组初始纯物理验证误差。
 不更新参数、不创建训练输出。
 预检查分为两种：Torch/NumPy物理实现一致性要求<1e-5；旧物理与新标签的差异仅报告，绝不作为退出条件。
 
-## 4. 自行开始训练
+### 4. 自行开始训练
 
 先运行一组：
 
 ```powershell
-python -m src.forward.train --data data/forward/v1 --groups 1 --out runs/forward/nf1_v1
+python -m aperture.forward train --data data/forward/v1 --groups 1 --out runs/forward/nf1_v1
 ```
 
 再运行全部七组：
 
 ```powershell
-python -m src.forward.train --data data/forward/v1 --out runs/forward/all_v1
+python -m aperture.forward train --data data/forward/v1 --out runs/forward/all_v1
 ```
 
 默认每组分别训练 physics（夫琅禾费+残差）和 baseline（无物理层），各50轮、batch16、base32、学习率3e-4。
@@ -137,25 +141,25 @@ python -m src.forward.train --data data/forward/v1 --out runs/forward/all_v1
 PSNR使用固定数据范围1（不同于旧脚本的预测依赖峰值），不能把新旧PSNR当作完全同定义。
 默认命令不改变旧模型设定；可通过文末的 `--propagator` 参数开展角谱物理层对照。
 
-## 小规模复现与测试
+### 小规模复现与测试
 
 ```powershell
-python -m unittest tests.test_pipeline tests.test_rs1_audit -v
-python -m src.forward.validate --grid 64 --out results/forward/checks/my_smoke
-python -m src.forward.generate --grid 64 --samples 24 --validation results/forward/checks/my_smoke/validation.json --out data/forward/my_smoke
-python -m src.forward.train --data data/forward/my_smoke --base-ch 8 --batch-size 8 --dry-run
+python -m unittest tests.test_physics -v
+python -m aperture.forward validate --grid 64 --out results/forward/checks/my_smoke
+python -m aperture.forward generate --grid 64 --samples 24 --validation results/forward/checks/my_smoke/validation.json --out data/forward/my_smoke
+python -m aperture.forward train --data data/forward/my_smoke --base-ch 8 --batch-size 8 --dry-run
 ```
 
 小网格仅用于检查流程，几何细节可能被下采样改变，不能用于正式性能结论。
 
-## 更新：纯角谱参照与可选角谱训练
+### 更新：纯角谱参照与可选角谱训练
 
-新增 `python -m src.forward.reference`，只读现有数据和最佳权重，不训练网络、不写回旧结果。
+新增 `python -m aperture.audit reference`，只读现有数据和最佳权重，不训练网络、不写回旧结果。
 会在同一划分、观察坐标和后处理下比较纯FFT、纯角谱、已有残差模型和已有基线。
 
 ```powershell
 conda activate d2l
-python -m src.forward.reference --data data/forward/v1 --compare-run runs/forward/all_first --device cuda --out results/forward/reference/asm_v2
+python -m aperture.audit reference --data data/forward/v1 --compare-run runs/forward/all_first --device cuda --out results/forward/reference/asm_v2
 ```
 
 本次已评估的参照保存在 `results/forward/reference/asm_v1`，上面的v2仅为再次评估示例，不能使用已存在的输出目录。
@@ -184,16 +188,16 @@ python -m src.forward.reference --data data/forward/v1 --compare-run runs/forwar
 先做只读检查：
 
 ```powershell
-python -m src.forward.train --data data/forward/v1 --groups 3 5 --models physics --propagator hybrid --batch-size 4 --device cuda --dry-run
+python -m aperture.forward train --data data/forward/v1 --groups 3 5 --models physics --propagator hybrid --batch-size 4 --device cuda --dry-run
 ```
 
 维护者已完成的重点组配置为ASM、10轮、batch4，两组均选择epoch0。若自行重复这一对照，可使用新的输出目录：
 
 ```powershell
-python -m src.forward.train --data data/forward/v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --device cuda --out runs/forward/asm_nf3_nf5_reproduce
+python -m aperture.forward train --data data/forward/v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --device cuda --out runs/forward/asm_nf3_nf5_reproduce
 ```
 
-## 更新：训练时间统计（默认启用）
+### 更新：训练时间统计（默认启用）
 
 只影响未来写入新目录的训练，不回写、估算或补填旧训练的耗时。
 CPU使用单调墙钟，GPU在计时块前后同步，避免只统计到异步提交时间。
@@ -215,18 +219,94 @@ CPU使用单调墙钟，GPU在计时块前后同步，避免只统计到异步�
 根目录总时长从main入口开始，包含数据检查和设备探测，不包含Python解释器启动和模块导入。
 各时间口径有包含关系，不能把总时间与它包含的子项再次相加。
 
-## 已完成：扩大独立RS1验证
+### 已完成：扩大独立RS1验证
 
-新增`python -m src.forward.rs1_audit`。在八类各3个新光阑上检查NF=0.03、3、5，共72例；每例73至82个共同观察点，独立RS1积分全部通过加密收敛检查。
+新增`python -m aperture.audit rs1`。在八类各3个新光阑上检查NF=0.03、3、5，共72例；每例73至82个共同观察点，独立RS1积分全部通过加密收敛检查。
 
 主对照为加入解析sinc像素面积因子的夫琅禾费与当前角谱，原点采样FFT另行保留。纯物理指标共用RS抽样峰值；网络归一化log输出的辅助指标分别解释。
 
 使用已生成数据和已训练权重时：
 
 ```powershell
-python -m src.forward.rs1_audit --data data/forward/v1 --old-run runs/forward/all_first --asm-run runs/forward/asm_nf3_nf5_e10_v1 --out results/forward/checks/rs1_audit_v2 --device cuda
+python -m aperture.audit rs1 --data data/forward/v1 --old-run runs/forward/all_first --asm-run runs/forward/asm_nf3_nf5_e10_v1 --out results/forward/checks/rs1_audit_v2 --device cuda
 ```
 
-如果数据或权重使用其他输出名称，须相应替换三个输入路径。此命令只做冻结评估，不更新权重。详细口径见[审计说明](RS1_AUDIT_README.md)，结果见[公开汇总](../../docs/phase1/README.md)。
+如果数据或权重使用其他输出名称，须相应替换三个输入路径。此命令只做冻结评估，不更新权重。详细口径见见下文「独立 RS1 传播审计」，结果见[结果记录](README.md)。
 
 NF=3、5的48例均支持角谱更接近独立积分，但这不构成新增网络收益：两组角谱残差最优均为epoch0。下一步固定系统偏差实验尚未开展。
+
+## 独立 RS1 传播审计
+
+入口：`python -m aperture.audit rs1`。只读原始数据和冻结权重，在新目录生成审计输入、直接积分结果、指标、图和报告。
+
+本次正式输出为 `results/forward/checks/rs1_audit_v1/`。如需再次执行，在项目根目录使用新的输出名称：
+
+```powershell
+conda activate d2l
+python -m aperture.audit rs1 --out results/forward/checks/rs1_audit_v2 --device cuda
+```
+
+默认 NF=0.03、3、5，八种策略各生成3个新光阑，共24个输入、72个传播案例。随机种子20261015；对全部原1000个输入及新输入逐一检查SHA256，排除完全重复。使用新几何样本，不重新生成或改写训练标签。
+
+### 验证对象
+
+| 名称 | 含义 |
+|---|---|
+| fraunhofer | 原来的点采样夫琅禾费FFT |
+| fraunhofer_cells | 夫琅禾费FFT乘解析sinc像素面积因子；把每个输入像素解释为常透过率方格，与RS1和ASM一致 |
+| asm_c2 | 当前角谱传播算法，2倍子像素、2倍补零，NumPy双精度 |
+| asm_c4 | 同一角谱算法，子像素加密到4倍；其余条件相同 |
+| RS1参照 | 直接累加球面波积分，包含1/(kr)项，无FFT传播；双精度计算 |
+
+主要物理结论比较 `asm_c2` 和 `fraunhofer_cells`，减少像素表示不同造成的混淆；原点采样FFT保留用于联系旧实验。
+
+冻结的原夫琅禾费残差模型、原基线、已有角谱残差模型另做辅助比较。角谱训练仅有NF=3、5，远场组不虚构缺失的角谱权重。网络仍使用原训练集的条件归一化参数。
+
+### 观察点与数值收敛
+
+- 使用相同物理观察面坐标 `x=(j-N/2)*lambda*z/(N*input_pitch)`。
+- 点集包含中心5×5网格、多尺度轴向和对角方向点，以及两种物理预测峰值的邻域并集。所有方法和积分精度使用同一组点，不按误差大小筛除位置。
+- 中心、中间和外围分区按像素半径定义；不同光阑的主瓣和旁瓣形态不同，不能把这些分区直接称为统一主瓣/旁瓣掩膜。
+- RS1依次用2、4、8倍子像素积分，必要时到16倍；可显式设置 `--max-rs-level 32`。至少比较两次加密变化。
+- 默认要求末次最大强度变化/RS抽样峰值≤5e-4、共同尺度log平均变化≤2e-4，且加密变化下降。失败案例仍保留原始结果，但不计入通过收敛的汇总。
+- 这些是本次审计的数值容差；末次加密差是经验收敛指标，不是严格误差上界。
+
+### 如何读结果
+
+主指标定义为：
+
+\[
+E_m=\frac{1}{K}\sum_{j=1}^{K}
+\frac{|I_m(p_j)-I_{RS}(p_j)|}{S},\qquad
+S=\max_j I_{RS}(p_j).
+\]
+
+所有物理方法使用同一个RS分母，保留绝对强度尺度的相对误差；不会各自缩放到峰值1来消除差别。共同尺度log指标也使用同一个S。
+
+`comparisons.csv` 的 `resolved_margin` 要求匹配像素的夫琅禾费误差减去ASM误差，大于5倍RS末次平均变化；同时必须通过收敛检查才计入汇总。这是保守的数值判别门槛，不是统计显著性检验。
+
+`model_metrics_auxiliary.csv` 使用冻结网络原有的归一化log输出。网络没有输出绝对强度；RS全图峰值也只能由抽样点估计。因此这是归一化图样的辅助比较，不能与主指标混为一谈，也不能直接当作原测试集的全图MAE。
+
+### 输出文件
+
+- `audit_apertures.npy`、`apertures.json`：新输入、策略、重复检查信息。
+- `run_config.json`：参数、物理尺度、指标口径、源代码及旧权重哈希、权重选优记录。
+- `cases/*.npz`、`cases/*.json`：每个案例的观察点坐标、各积分级别的RS强度、各方法预测、收敛及几何信息。
+- `case_metrics.csv`、`convergence.csv`、`comparisons.csv`：逐例指标、逐级收敛、改善幅度。
+- `summary.csv`、`win_counts.json`、`report.md`：通过收敛的汇总与说明。
+- `physics_comparison.png`、`nf_*_examples.png`：总体误差及各类第一幅输入的观察点/误差示例。示例图右栏横轴是观察点编号，不是空间剖面。
+- `progress.json`、`completion.json`：进度、完成状态及墙钟耗时。积分级别记录自身耗时；`comparisons.csv`的`seconds`统计到物理评分完成，不包含随后网络辅助推理和文件保存；总耗时包含这些步骤及绘图。
+
+### 已有内容保护与边界
+
+所有输出根目录必须不存在。审计不会更新网络参数或旧训练日志；不引入随机观测噪声、系统像差或逆向任务。
+
+独立积分可以检查传播近似及数值实现；有限样本和观察点不能证明整幅图像、所有几何形状或真实实验的误差水平。由于还处于理想标量仿真条件，不能把角谱精度优势归为神经网络贡献。
+
+针对本次新增逻辑的检查：
+
+```powershell
+python -m unittest tests.test_rs1_audit -v
+```
+
+包括共同尺度能否保留强度偏差、采样边界/去重，以及独立RS积分与单像素方孔远场sinc解的比较。最后一项还验证收敛门槛能拒绝不足的积分精度。

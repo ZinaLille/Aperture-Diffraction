@@ -1,6 +1,6 @@
 # 阶段二：逆向预测（衍射图样 → 光阑）
 
-状态：**进行中**。代码骨架在 `src/inverse/`，尚未产生训练结果。
+状态：**进行中**。代码骨架在 `aperture/inverse.py`，尚未产生训练结果。
 
 ## 目标
 
@@ -17,7 +17,7 @@
 ## 方法约定
 
 1. 先训练纯逆向网络（U-Net 编码器—解码器），用光阑监督（L1 + 二值交叉熵或 IoU）起步；
-2. 再用 `src/common/torch_physics.py` 把预测光阑正向传播，加入图样一致性损失；
+2. 再用 `aperture/physics.py` 把预测光阑正向传播，加入图样一致性损失；
 3. 评价同时报告**光阑重建指标**（MAE / IoU / SSIM）与**再传播一致性**，不只报其中一项。
 
 ## 输出约定
@@ -27,7 +27,7 @@
 
 ## 待办
 
-1. `dataset.py`：读取 forward 数据并构造逆向样本；
-2. `model.py`：逆向 U-Net；
-3. `train.py`：监督 + 正向一致性训练；
-4. `evaluate.py`：重建与再传播评估。
+1. `load_inverse_pairs()`：读取 forward 数据并构造逆向样本；
+2. `InverseUNet`：逆向 U-Net（复用 `aperture.models.ConvBlock`）；
+3. `train()`：监督 + 正向一致性训练；
+4. `evaluate()`：重建与再传播评估。
