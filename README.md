@@ -1,8 +1,8 @@
 # Aperture-Diffraction
 
-光阑形状 → 衍射图样的正向预测。工程只保留三个脚本，分别负责 **按 NF 生成数据**、**训练** 和 **评估与可视化**。
+光阑形状 → 衍射图样的正向预测。正向流程保留三个脚本，分别负责 **按 NF 生成数据**、**训练** 和 **评估与可视化**；逆向只做单张图推理，不训练逆网络。
 
-> 详细的代码结构、每个参数的含义、输出图解读与常见问题见 [GUIDE.md](GUIDE.md)。
+> 详细的代码结构、每个参数的含义、输出图解读与常见问题见 [GUIDE.md](GUIDE.md)；单图逆向见 [INVERSE.md](INVERSE.md)。
 
 ## 依赖
 
@@ -90,19 +90,38 @@ python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
 
 极端形状与扫描默认取 NF=1 组，可用 `--shape-nf` 指定。
 
+## 4. 单张图逆向（不训练）
+
+```bash
+python inverse.py \
+  --checkpoint runs/v1/nf_1/physics/best_model.pt \
+  --pattern path/to/pattern.npy \
+  --nf 1 \
+  --out inverse_runs/case_nf1
+```
+
+- 只读一张图样 + 冻结的 physics 正向模型，测试时优化，不训练逆网络；
+- `z` 默认由当前光阑支撑和 NF 自洽计算，不需要外部给；
+- 光阑参数化带平滑水平集、曲率/周长/小岛/面积先验，最后做椭圆/矩形几何整理；
+- 输出 top-3 候选、重建图样、`pattern_mae` / `physical_mae` 等诊断；
+- 详细说明见 [INVERSE.md](INVERSE.md)。
+
 ## 项目结构
 
 ```text
 Aperture-Diffraction/
 ├── README.md
-├── GUIDE.md             # 详细代码结构与运行说明
+├── GUIDE.md             # 正向流程详细说明
+├── INVERSE.md           # 单图逆向说明
 ├── .gitignore
 ├── generate.py          # 按 NF 生成数据 + 传播验证
 ├── train.py             # 模型、损失、训练与曲线/样例图
 ├── evaluate.py          # 纯物理/模型对比 + 全部可视化
+├── inverse.py           # 单图逆向：正向适配 + 物理先验 + 几何后处理 + CLI
 ├── data/.gitkeep        # 生成的数据（不提交）
 ├── runs/.gitkeep        # 权重与训练记录（不提交）
-└── results/.gitkeep     # 评估与图片（不提交）
+├── results/.gitkeep     # 评估与图片（不提交）
+└── inverse_runs/        # 单图逆向输出（不提交）
 ```
 
 `data/`、`runs/`、`results/` 只保留空目录占位，实际数组、权重、图片由 `.gitignore` 排除。所有输出目录必须不存在；重跑请换名字。设备默认 `auto`，可加 `--device cpu` 或 `--device cuda`。

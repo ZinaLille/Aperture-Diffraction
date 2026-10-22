@@ -12,6 +12,7 @@ venv/
 !/runs/.gitkeep
 /results/*
 !/results/.gitkeep
+/inverse_runs/*
 
 # 权重与数据数组（即使不在上述目录也不提交）
 *.pt
