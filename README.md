@@ -21,7 +21,9 @@ python generate.py --samples 1000 --out data/v1
 - 七组菲涅耳数 `0.01, 0.03, 0.1, 0.3, 1, 3, 5` 共用同一批光阑和同一个 train/val/test 划分。
 - `NF < --far-threshold`（默认 0.1）用夫琅禾费 FFT 生成标签，其余用缩放角谱。
 - 写入数据前自动做传播验证：远场 FFT/角谱一致性、补零与细分收敛、少量抽样点的独立 RS1 积分；报告写入 `validation.json`，不通过则不写训练数组。
-- `D` 为光阑非零像素包围盒的较长跨度，`z=D²/(λNF)`，观察面像素间距 `λz/(NΔx)`；默认 256 网格、10 μm 像素、532 nm。
+- 每张光阑先量支撑宽度 `D`（非零像素包围盒的较长跨度，含孔间距），菲涅耳数 `NF = D²/(λz)`；生成时按目标 NF 反解 `z = D²/(λNF)`，观察面像素间距 `λz/(NΔx)`；默认 256 网格、10 μm 像素、532 nm。
+
+NF 的定义、约定与数值示例见 [GUIDE.md §3.2](GUIDE.md#32-菲涅耳数与传播几何)。
 
 输出：
 
@@ -82,13 +84,16 @@ python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
 | `per_sample.csv` | 逐样本指标 |
 | `metrics.txt` | 七组平均表与简短结论 |
 | `test_mae_comparison.png` | 测试 MAE 随 NF 变化 |
-| `samples.png` | 每个 NF 一个样本：光阑、两种纯物理、physics（若训练了 baseline 也包含）、标签 |
+| `samples.png` | 每个 NF 一个**不同生成策略**的样本：光阑、标签、各方法预测 |
+| `diversity.png` | **八种光阑生成策略**各取样本：光阑、标签、各方法预测 |
 | `error_map.png` | 单样本误差、模型差值、中心剖面、像素误差直方图 |
 | `error_histogram.png` | 逐样本 MAE 分布；有 baseline 时额外显示对比散点 |
 | `extreme_test.png` | 单缝、双缝、圆孔、方孔、光栅、环、全开、全挡 |
 | `sweep_slit_width.png` 等 | 缝宽、圆孔半径、光栅周期扫描 |
 
-极端形状与扫描默认取 NF=1 组，可用 `--shape-nf` 指定。
+极端形状与扫描默认取 NF=1 组，可用 `--shape-nf` 指定；`diversity.png` 默认每个策略 1 个样本，
+可用 `--diversity-per-strategy N` 增加。光阑类别由 `generate.strategy_assignment(samples, seed)`
+从 manifest 复现，不需要改数据格式。
 
 ## 4. 单张图逆向（不训练）
 
@@ -100,10 +105,15 @@ python inverse.py \
   --out inverse_runs/case_nf1
 ```
 
-- 只读一张图样 + 冻结的 physics 正向模型，测试时优化，不训练逆网络；
+- **网络输入只有衍射图样**（`--pattern`）；配对光阑只能通过 `--expected` 用于作图对比，绝不进入 loss/梯度/优化；
 - `z` 默认由当前光阑支撑和 NF 自洽计算，不需要外部给；
-- 光阑参数化带平滑水平集、曲率/周长/小岛/面积先验，最后做椭圆/矩形几何整理；
+- 损失分阶段：前期只拟合数据/大方向，后期渐入二值/形态学先验；数据项含相关系数项（尺度不变，抑制空/糊斑），先验与数据的占比按 EMA 动态保持；
+- 默认迭代 960 步（`--steps` 可继续加长）；收尾对 mask 做 `--edge-sigma` 高斯平滑，输出是平滑边缘而不是硬阈值锯齿；
+- **后段几何参数化**：像素解 → 正基元（椭圆或正 N 边形）− 孔洞 → 用同一前向微调参数，输出平滑的基元并集（`--geom-primitive polygon --geom-sides N`；`--geometric-stage off` 可关闭）；
+- 光阑参数化带平滑水平集；默认不做椭圆/矩形拟合，避免抹掉孔洞；
 - 输出 top-3 候选、重建图样、`pattern_mae` / `physical_mae` 等诊断；
+- 加 `--expected` / `--expected-sample` 可生成“预期 vs 实际 top1”对照图；参考光阑只做对比，不参与优化；
+- 数字 0/8/圆盘/正多边形等测试用例由 `inverse.py --write-cases` 离线生成（GT 仅用于对比，网络不接收光阑）；
 - 详细说明见 [INVERSE.md](INVERSE.md)。
 
 ## 项目结构
@@ -117,7 +127,7 @@ Aperture-Diffraction/
 ├── generate.py          # 按 NF 生成数据 + 传播验证
 ├── train.py             # 模型、损失、训练与曲线/样例图
 ├── evaluate.py          # 纯物理/模型对比 + 全部可视化
-├── inverse.py           # 单图逆向：正向适配 + 物理先验 + 几何后处理 + CLI
+├── inverse.py           # 单图逆向：正向适配 + 物理先验 + 几何后处理 + 用例生成 + CLI
 ├── data/.gitkeep        # 生成的数据（不提交）
 ├── runs/.gitkeep        # 权重与训练记录（不提交）
 ├── results/.gitkeep     # 评估与图片（不提交）

@@ -102,32 +102,86 @@ Aperture-Diffraction/
 | 传播验证 | `validate` | [generate.py:473](generate.py#L473) |
 | 数据生成 | `generate` 与 CLI | [generate.py:579](generate.py#L579) |
 
-### 3.2 物理约定
+### 3.2 菲涅耳数与传播几何
 
-对每张光阑：
+#### 3.2.1 定义
 
-$$
-D=\max(\text{行跨度},\text{列跨度})\cdot\Delta x
-$$
+对每张光阑，先量出支撑宽度 $D$，再连同波长 $\lambda$ 与传播距离 $z$ 定义菲涅耳数：
 
 $$
-z=\frac{D^2}{\lambda N_F},\qquad
-\Delta x_{\text{out}}=\frac{\lambda z}{N\Delta x_{\text{in}}}
+N_F=\frac{D^2}{\lambda z}
 $$
 
-- `D` 是光阑非零像素包围盒的较长跨度，包含孔间距，不是单个孔径。
-- 同一 NF 组内不同光阑的 `D` 不同，所以每个样本的 `z` 不同。
-- 观察面是随样本缩放的网格，不是固定像素的相机。
-- 默认：`256×256`、输入像素 `10 μm`、波长 `532 nm`。
+| 符号 | 含义 | 默认 / 代码位置 |
+|---|---|---|
+| $D$ | 光阑非零像素包围盒的较长跨度（米）：$D=\max(\text{行跨度},\text{列跨度})\cdot\Delta x_{\text{in}}$ | `support_width`（[generate.py:81](generate.py#L81)） |
+| $\lambda$ | 真空波长 | 532 nm（`--wavelength-nm`） |
+| $z$ | 光阑面到观察面的距离 | 由 $D$ 与 $N_F$ 反解（[generate.py:89](generate.py#L89)） |
+| $\Delta x_{\text{in}}$ | 光阑面像素间距 | 10 μm（`--pitch-um`） |
 
-标签处理：
+约定与判据：
+
+- $D$ 取整个光阑的跨度，包含多孔之间的间距，不是单个孔径的尺寸；两个相距很远的孔也会把 $D$ 撑大。
+- 若按教科书用半径/半宽 $a=D/2$ 定义菲涅耳数，则 $N_F^{(a)}=a^2/(\lambda z)=N_F/4$：本文的 $N_F$ 是这种写法的 4 倍。等价地，从孔中心看过去的半波带数为 $N_F/4$。
+- $N_F\ll1$ 即 $z\gg D^2/\lambda$，属夫琅禾费（远场）区，FFT 足够；$N_F\gtrsim1$ 时孔径上的二次相位不能忽略，需按菲涅耳（近场）处理。孔径边缘相对中心的二次相位为 $\phi_{\max}=\pi D^2/(4\lambda z)=\pi N_F/4$，它直接衡量近场近似的误差大小。
+- $N_F$ 只是 $D$、$\lambda$、$z$ 的无量纲组合，不是光阑本身的属性；七组 $N_F$ 是扫描参数，不是七类光阑。
+
+#### 3.2.2 由 NF 反推 z 与观察面
+
+数据集按 $N_F$ 组织，所以生成时是反着算的：给定目标 $N_F$，先由光阑量出 $D$，再解出 $z$：
+
+$$
+z=\frac{D^2}{\lambda N_F}
+$$
+
+观察面沿用“缩放坐标”（缩放角谱的输出本来就采样在这个网格上）：
+
+$$
+\Delta x_{\text{out}}=\frac{\lambda z}{N\Delta x_{\text{in}}},\qquad
+L_{\text{out}}=N\Delta x_{\text{out}}=\frac{\lambda z}{\Delta x_{\text{in}}}=\frac{D^2}{\Delta x_{\text{in}}N_F}
+$$
+
+其中 $N$ 是 `--grid`。由此得到三条与代码行为一致的推论：
+
+- 同一 $N_F$ 组内每张光阑的 $D$ 不同，所以 $z$ 逐样本不同；观察面是随样本缩放的网格，不是固定像素的相机。
+- $L_{\text{out}}\propto D^2/N_F$：同一光阑，$N_F$ 越小（越远），视场越大、像素越粗。
+- 衍射特征宽度 $\lambda z/D$ 在观察面上固定占 $N\Delta x_{\text{in}}/D=N/n_D$ 个像素（$n_D$ 是光阑跨度的像素数），与 $\lambda$、$z$ 无关。
+
+同一组公式在四个位置复用，改动物理约定时要一起改：
+
+| 位置 | 用途 |
+|---|---|
+| `support_width` / `geometry`（[generate.py:81](generate.py#L81)） | 生成标签时算 $D$、$z$ 与观察面像素 |
+| `geometry_arrays`（[train.py:261](train.py#L261)） | 训练时按 manifest 的 $N_F$ 重算每个样本的 $z$，供条件与物理层使用 |
+| `condition_for`（[evaluate.py:288](evaluate.py#L288)） | 极端形状与参数扫描按各自 $D$ 保持指定 $N_F$ |
+| `geometry_from_mask`（[inverse.py:209](inverse.py#L209)） | 反演每若干步用当前 mask 自洽重算 $z$ |
+
+#### 3.2.3 数值示例
+
+默认配置（$N=256$、输入像素 10 μm、$\lambda=532$ nm），取 $D=1$ mm（跨度 100 像素）的光阑：
+
+| $N_F$ | $z$ | $\Delta x_{\text{out}}$ | $L_{\text{out}}$ | $\phi_{\max}$ |
+|---:|---:|---:|---:|---:|
+| 0.01 | 188 m | 39.1 mm | 10 m | 0.008 rad |
+| 0.03 | 62.7 m | 13.0 mm | 3.33 m | 0.024 rad |
+| 0.1 | 18.8 m | 3.91 mm | 1.00 m | 0.079 rad |
+| 0.3 | 6.27 m | 1.30 mm | 333 mm | 0.24 rad |
+| 1 | 1.88 m | 391 μm | 100 mm | 0.79 rad |
+| 3 | 627 mm | 130 μm | 33.3 mm | 2.36 rad |
+| 5 | 376 mm | 78.1 μm | 20.0 mm | 3.93 rad |
+
+$D$ 换成 0.5 mm 时，$z$、$\Delta x_{\text{out}}$、$L_{\text{out}}$ 全部按 $D^2$ 缩成 1/4，$\phi_{\max}$ 只由 $N_F$ 决定。
+
+$N_F=0.1$ 时 $\phi_{\max}$ 仅约 0.08 rad；`validation.json` 的 `switch_agreement` 也显示该点 FFT 与角谱标签的 MAE 在 4e-5 量级。切换点取 0.1 是本实验的数值验收选择（§3.6），不是普适物理边界。
+
+#### 3.2.4 标签处理
 
 $$
 I_{\text{norm}}=\frac{I}{\max I},\qquad
 I_{\text{label}}=\frac{\log(1+\alpha I_{\text{norm}})}{\max\log(1+\alpha I_{\text{norm}})}
 $$
 
-默认 `α=100`，输出在 `[0,1]`。
+默认 `α=100`，输出在 `[0,1]`；实现见 `postprocess`（[generate.py:99](generate.py#L99)）。
 
 ### 3.3 两种标签传播
 
@@ -243,7 +297,7 @@ python generate.py --nf 0.01 0.03 0.1 0.3 1 3 5 --samples 1000 --out data/v1
 | 网络 | `ConvBlock`、`ConditionedUNet` | [train.py:118](train.py#L118) |
 | 物理层 | `FraunhoferDetectorLayer`、`AngularSpectrumDetectorLayer` | [train.py:151](train.py#L151) |
 | 组合模型 | `ForwardModel` | [train.py:227](train.py#L227) |
-| 数据 | `GroupData`、条件标准化 | [train.py:278](train.py#L278) |
+| 数据 | `GroupData`、条件标准化 | [train.py:279](train.py#L279) |
 | 训练 | `run_group` | [train.py:484](train.py#L484) |
 | CLI | `main` | [train.py:558](train.py#L558) |
 
@@ -391,10 +445,10 @@ python train.py --data data/v1 --propagator hybrid --out runs/hybrid
 | 权重加载 | `load_model` | [evaluate.py:37](evaluate.py#L37) |
 | 方法集合 | 纯 FFT、纯 ASM、physics；baseline 可选 | [evaluate.py:61](evaluate.py#L61) |
 | 逐样本评估 | `evaluate_group` | [evaluate.py:74](evaluate.py#L74) |
-| 基础图 | MAE 曲线、样本图、误差图、直方图 | [evaluate.py:99](evaluate.py#L99) |
-| 极端形状 | 八种标准形状 | [evaluate.py:256](evaluate.py#L256) |
-| 参数扫描 | 缝宽、圆孔半径、光栅周期 | [evaluate.py:328](evaluate.py#L328) |
-| CLI | `main` | [evaluate.py:377](evaluate.py#L377) |
+| 基础图 | MAE 曲线、样本图、八策略多样性图、误差图、直方图 | [evaluate.py:102](evaluate.py#L102) |
+| 极端形状 | 八种标准形状 | [evaluate.py:334](evaluate.py#L334) |
+| 参数扫描 | 缝宽、圆孔半径、光栅周期 | [evaluate.py:406](evaluate.py#L406) |
+| CLI | `main` | [evaluate.py:457](evaluate.py#L457) |
 
 ### 5.2 比较的方法
 
@@ -440,13 +494,16 @@ PSNR 使用固定数据范围 1，所以接近零误差时会出现很大的 dB 
 
 **`samples.png`**
 
-每个 NF 一行，列为：
+每个 NF 一行，行内选的是一个**不同生成策略**的测试样本，列为：
 
 ```text
-光阑 | 纯 FFT | 纯 ASM | physics | [baseline] | 标签
+光阑 | 标签 | 纯 FFT | 纯 ASM | physics | [baseline]
 ```
 
-`baseline` 列只在训练过 baseline 时出现。
+`baseline` 列只在训练过 baseline 时出现。**`diversity.png`** 则把八种策略各取一个样本排成 8 行，
+列相同，用于检查数据覆盖和各类形状的预测质量；默认每个策略 1 个样本，可用
+`--diversity-per-strategy N` 增加。策略分配由
+[`generate.strategy_assignment`](generate.py#L428) 从 manifest 的 `samples/seed` 复现。
 
 重点看：
 
@@ -526,6 +583,7 @@ python evaluate.py --data data/v1 --run runs/v1 --shape-nf 5 --out results/nf5
 | `--split` | test | `val` 或 `test` |
 | `--batch-size` | 8 | 显存不足时减小 |
 | `--shape-nf` | 1.0 | 极端形状/扫描选择最近的 NF 组 |
+| `--diversity-per-strategy` | 1 | `diversity.png` 每个策略展示几个样本 |
 | `--device` | auto | `auto/cpu/cuda` |
 
 ---
