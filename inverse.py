@@ -28,7 +28,7 @@ import time
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -237,9 +237,11 @@ class FrozenForward(torch.nn.Module):
         condition = condition.to(device=aperture.device, dtype=torch.float32)
 
         if self.mode == "checkpoint":
+            assert self.model is not None
             pred, sim, delta = self.model(aperture, condition, z)
             pred = sim + self.residual_weight * delta
         else:
+            assert self.physical_layer is not None
             pred = self.physical_layer(aperture, z)
             sim = pred
             delta = torch.zeros_like(pred)
@@ -576,7 +578,7 @@ class Candidate:
     primitive_components: int = 0
     primitive_info: Dict = field(default_factory=dict)
 
-    def summary(self) -> Dict[str, float]:
+    def summary(self) -> Dict[str, Any]:
         return {
             "rank": self.rank,
             "seed": self.seed,
@@ -754,6 +756,8 @@ class PixelField(nn.Module):
     它不是训练层，kernel 固定，只作为物理上的“最小特征尺寸/边缘平滑”先验。
     """
 
+    blur_kernel: torch.Tensor
+
     def __init__(self, theta: torch.Tensor, smooth_sigma: float = 1.5):
         super().__init__()
         self.theta = nn.Parameter(theta)
@@ -888,6 +892,7 @@ def _fixed_geometry(forward: FrozenForward, cfg: InversionConfig,
                     device: torch.device):
     """canonical / known 模式的固定 z 与 condition。"""
     if cfg.geometry == "known":
+        assert cfg.z_m is not None
         z = torch.tensor([float(cfg.z_m)], dtype=torch.float64, device=device)
     else:
         reference = (cfg.support_fraction * cfg.grid *
