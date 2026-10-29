@@ -166,8 +166,13 @@ a = sigmoid(GaussianBlur(theta, sigma(t)) / T)
 
 默认 `--primitive-fit none`：椭圆/矩形拟合会把孔洞和细结构抹掉，只在明确需要“干净几何”时
 再打开 `ellipse`/`rect`。打开时 `--primitive-min-area 20 --primitive-max-fit-area 4000
+<<<<<<< Updated upstream
 --primitive-min-solidity 0.2`。这样输出的小孔、小元素天然是有限尺寸、平滑边界的椭圆，
 不会留下扭曲的细丝或随机小岛。
+=======
+--primitive-min-solidity 0.2`。整理后会重新传播和评分；仅当图样 MAE、数据损失和排名评分
+均未变差（容差 1e-8）时才接受，否则保留原始像素候选。不能为使形状好看而强行改成椭圆。
+>>>>>>> Stashed changes
 
 不加强制单连通、强制居中、强制对称等先验，因为数据里本来就有多元素、偏心和带孔的光阑。
 
