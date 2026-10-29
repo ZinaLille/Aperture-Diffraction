@@ -25,6 +25,8 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 import matplotlib
 
 matplotlib.use("Agg")
@@ -123,27 +125,42 @@ def _fine_aperture(aperture, oversample, pad_factor):
     return result, (oversample - 1) / 2
 
 
+_ASM_CACHE = {}
+
+
+def _asm_constants(config):
+    key = (config.grid, config.oversample, config.pad_factor,
+           config.input_pitch_m, config.wavelength_m)
+    if key not in _ASM_CACHE:
+        c, pad = config.oversample, config.pad_factor
+        m = config.grid * c * pad
+        dx = config.input_pitch_m / c
+        origin_shift = (c - 1) / 2
+        frequency = np.fft.fftfreq(m, dx)
+        q = config.wavelength_m**2 * (frequency[:, None]**2 + frequency[None, :]**2)
+        propagating = q < 1
+        root = np.sqrt(np.maximum(1 - q, 0))
+        # sqrt(1-q)-1+q/2 的稳定写法，避免大 z 下的相消误差。
+        residual_coeff = -(2 * np.pi / config.wavelength_m) * q * q / (2 * (1 + root)**2)
+        coords = (np.arange(m) - m // 2 - origin_shift) * dx
+        chirp_coeff = np.pi * coords**2 / config.wavelength_m
+        indices = m // 2 + (np.arange(config.grid) - config.grid // 2) * pad
+        _ASM_CACHE[key] = (dx, propagating, residual_coeff, chirp_coeff, indices)
+    return _ASM_CACHE[key]
+
+
 def angular_spectrum_raw(aperture, z, config):
     """缩放角谱：保留精确角谱色散，在夫琅禾费观察网格上取样。"""
     c, pad = config.oversample, config.pad_factor
-    fine, origin_shift = _fine_aperture(aperture, c, pad)
-    m = len(fine)
-    dx = config.input_pitch_m / c
-    frequency = np.fft.fftfreq(m, dx)
-    q = config.wavelength_m**2 * (frequency[:, None]**2 + frequency[None, :]**2)
-    propagating = q < 1
-    root = np.sqrt(np.maximum(1 - q, 0))
-    # sqrt(1-q)-1+q/2 的稳定写法，避免大 z 下的相消误差。
-    residual_phase = -(2 * np.pi / config.wavelength_m) * z * q * q / (2 * (1 + root)**2)
-    correction = np.exp(1j * residual_phase) * propagating
+    fine, _ = _fine_aperture(aperture, c, pad)
+    dx, propagating, residual_coeff, chirp_coeff, indices = _asm_constants(config)
+    correction = np.exp(1j * (z * residual_coeff)) * propagating
     spectrum = np.fft.fft2(np.fft.ifftshift(fine))
     corrected = np.fft.fftshift(np.fft.ifft2(spectrum * correction))
-    coords = (np.arange(m) - m // 2 - origin_shift) * dx
-    chirp = np.exp(1j * np.pi * coords**2 / (config.wavelength_m * z))
+    chirp = np.exp(1j * (chirp_coeff / z))
     field = np.fft.fftshift(np.fft.fft2(np.fft.ifftshift(
         corrected * chirp[:, None] * chirp[None, :])))
     # 输出 x_j=(j-N/2)*lambda*z/(N*input_pitch)；补零只是更密地采样同一网格。
-    indices = m // 2 + (np.arange(config.grid) - config.grid // 2) * pad
     field = field[np.ix_(indices, indices)]
     return np.abs(field * dx**2 / (config.wavelength_m * z))**2
 
@@ -181,7 +198,7 @@ def image_metrics(pred, target):
 # ============================================================
 # 2. 八类光阑（几何与 legacy 保持一致）
 # ============================================================
-def draw_rect(a, cx, cy, w, h, angle=0):
+def draw_rect(a, cx, cy, w, h, angle=0.0):
     yy, xx = np.mgrid[:a.shape[0], :a.shape[1]]
     x, y = xx - cx, yy - cy
     ca, sa = np.cos(-angle), np.sin(-angle)
@@ -194,7 +211,7 @@ def draw_circle(a, cx, cy, r):
     a[(xx - cx)**2 + (yy - cy)**2 <= r**2] = 1.0
 
 
-def draw_ellipse(a, cx, cy, rx, ry, angle=0):
+def draw_ellipse(a, cx, cy, rx, ry, angle=0.0):
     yy, xx = np.mgrid[:a.shape[0], :a.shape[1]]
     x, y = xx - cx, yy - cy
     ca, sa = np.cos(-angle), np.sin(-angle)
@@ -222,7 +239,7 @@ def _fill_polygon(a, verts):
     a[inside] = 1.0
 
 
-def draw_polygon(a, cx, cy, n_sides, radius, angle=0):
+def draw_polygon(a, cx, cy, n_sides, radius, angle=0.0):
     angles = np.linspace(0, 2 * np.pi, n_sides, endpoint=False) + angle
     verts = np.stack([cx + radius * np.cos(angles), cy + radius * np.sin(angles)], axis=1)
     _fill_polygon(a, verts)
@@ -235,7 +252,7 @@ def draw_irregular_polygon(a, cx, cy, n_sides, r_min, r_max, angle, rng):
     _fill_polygon(a, np.stack([cx + radii * np.cos(angles), cy + radii * np.sin(angles)], axis=1))
 
 
-def draw_star(a, cx, cy, n_points, r_outer, r_inner, angle=0):
+def draw_star(a, cx, cy, n_points, r_outer, r_inner, angle=0.0):
     angles = np.linspace(0, 2 * np.pi, 2 * n_points, endpoint=False) + angle
     radii = np.tile([r_outer, r_inner], n_points)
     _fill_polygon(a, np.stack([cx + radii * np.cos(angles), cy + radii * np.sin(angles)], axis=1))
@@ -576,7 +593,90 @@ def config_from_args(args):
                          oversample=args.oversample, pad_factor=args.pad_factor)
 
 
-def generate(config, nf_values, samples, seed, out):
+def _resolve_torch_device(device):
+    if device == "numpy":
+        return None
+    if device == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("请求了 --device cuda，但当前环境不可用 CUDA")
+        return torch.device("cuda")
+    if device == "cpu":
+        return torch.device("cpu")
+    raise ValueError(f"未知设备选项：{device}")
+
+
+def _postprocess_batch_torch(raw, alpha):
+    raw = torch.clamp(raw, min=0.0)
+    peak = raw.amax(dim=(-2, -1), keepdim=True)
+    if not torch.isfinite(peak).all():
+        raise ValueError("传播强度包含非有限值")
+    safe_peak = torch.where(peak > 0, peak, torch.ones_like(peak))
+    value = torch.log1p(alpha * (raw / safe_peak))
+    vmax = value.amax(dim=(-2, -1), keepdim=True)
+    safe_vmax = torch.where(vmax > 0, vmax, torch.ones_like(vmax))
+    out = torch.where(peak > 0, value / safe_vmax, torch.zeros_like(value))
+    return out.to(torch.float32)
+
+
+def _generate_group_torch(apertures, z_all, method, config, patterns, nf,
+                          torch_device, batch_size):
+    samples = len(apertures)
+    batch_size = max(1, int(batch_size))
+    step = max(1, samples // 10)
+    next_log = step
+
+    dx, propagating_np, residual_np, chirp_np, indices_np = _asm_constants(config)
+    c = config.oversample
+    fine_grid = config.grid * c
+    padded_grid = fine_grid * config.pad_factor
+    offset = (padded_grid - fine_grid) // 2
+    propagating = torch.as_tensor(propagating_np, dtype=torch.bool, device=torch_device)
+    residual_coeff = torch.as_tensor(residual_np, dtype=torch.float64, device=torch_device)
+    chirp_coeff = torch.as_tensor(chirp_np, dtype=torch.float64, device=torch_device)
+    output_indices = torch.as_tensor(indices_np, dtype=torch.long, device=torch_device)
+
+    with torch.no_grad():
+        for start in range(0, samples, batch_size):
+            end = min(start + batch_size, samples)
+            batch_a = torch.as_tensor(np.asarray(apertures[start:end]),
+                                      dtype=torch.float64, device=torch_device)
+            batch_z = torch.as_tensor(z_all[start:end],
+                                      dtype=torch.float64, device=torch_device)
+            if method == "fraunhofer_fft":
+                field = torch.fft.fftshift(
+                    torch.fft.fft2(torch.fft.ifftshift(batch_a, dim=(-2, -1))),
+                    dim=(-2, -1))
+                scale = (config.input_pitch_m**2 / (config.wavelength_m * batch_z))[:, None, None]
+                raw = (field * scale).abs().square()
+            else:
+                fine = batch_a.repeat_interleave(c, -2).repeat_interleave(c, -1)
+                if offset > 0:
+                    fine = F.pad(fine, (offset, offset, offset, offset))
+                spectrum = torch.fft.fft2(torch.fft.ifftshift(fine, dim=(-2, -1)))
+                phase = batch_z[:, None, None] * residual_coeff
+                correction = torch.polar(torch.ones_like(phase), phase) * propagating
+                corrected = torch.fft.fftshift(
+                    torch.fft.ifft2(spectrum * correction), dim=(-2, -1))
+                c_phase = chirp_coeff[None, :] / batch_z[:, None]
+                chirp = torch.polar(torch.ones_like(c_phase), c_phase)
+                field = torch.fft.fftshift(
+                    torch.fft.fft2(torch.fft.ifftshift(
+                        corrected * chirp[:, :, None] * chirp[:, None, :],
+                        dim=(-2, -1))),
+                    dim=(-2, -1))
+                field = field.index_select(-2, output_indices).index_select(-1, output_indices)
+                scale = (dx**2 / (config.wavelength_m * batch_z))[:, None, None]
+                raw = (field * scale).abs().square()
+
+            patterns[start:end] = _postprocess_batch_torch(raw, config.log_alpha).cpu().numpy()
+            while next_log <= end:
+                print(f"  NF={nf:g} {method} {next_log}/{samples}", flush=True)
+                next_log += step
+
+
+def generate(config, nf_values, samples, seed, out, device="auto", batch_size=16):
     rng = np.random.RandomState(seed)
     strategies = [STRATEGIES[i % len(STRATEGIES)] for i in range(samples)]
     rng.shuffle(strategies)
@@ -592,7 +692,16 @@ def generate(config, nf_values, samples, seed, out):
             print(f"  光阑 {i + 1}/{samples}", flush=True)
     apertures.flush()
     np.savez(out / "splits.npz",
-             **{k: np.asarray(v, dtype=np.int64) for k, v in splits.items()})
+             train=np.asarray(splits["train"], dtype=np.int64),
+             val=np.asarray(splits["val"], dtype=np.int64),
+             test=np.asarray(splits["test"], dtype=np.int64))
+
+    d_m = np.array([support_width(np.asarray(apertures[i]), config.input_pitch_m)
+                    for i in range(samples)], dtype=np.float64)
+    torch_device = _resolve_torch_device(device)
+    if torch_device is not None:
+        print(f"使用 PyTorch ({torch_device}, batch_size={batch_size}, float64) 加速衍射传播 ...",
+              flush=True)
 
     groups = []
     for nf in nf_values:
@@ -601,14 +710,19 @@ def generate(config, nf_values, samples, seed, out):
         method = "fraunhofer_fft" if nf < config.far_threshold else "scaled_angular_spectrum"
         patterns = np.lib.format.open_memmap(folder / "patterns.npy", mode="w+",
                                             dtype="float32", shape=shape)
-        for i in range(samples):
-            a = np.asarray(apertures[i])
-            z = geometry(a, nf, config)["z_m"]
-            raw = (fraunhofer_raw(a, z, config) if method == "fraunhofer_fft"
-                   else angular_spectrum_raw(a, z, config))
-            patterns[i] = postprocess(raw, config.log_alpha)
-            if (i + 1) % max(1, samples // 10) == 0:
-                print(f"  NF={nf:g} {method} {i + 1}/{samples}", flush=True)
+        z_all = d_m * d_m / (config.wavelength_m * float(nf))
+        if torch_device is not None:
+            _generate_group_torch(apertures, z_all, method, config, patterns, nf,
+                                  torch_device, batch_size)
+        else:
+            for i in range(samples):
+                a = np.asarray(apertures[i])
+                z = float(z_all[i])
+                raw = (fraunhofer_raw(a, z, config) if method == "fraunhofer_fft"
+                       else angular_spectrum_raw(a, z, config))
+                patterns[i] = postprocess(raw, config.log_alpha)
+                if (i + 1) % max(1, samples // 10) == 0:
+                    print(f"  NF={nf:g} {method} {i + 1}/{samples}", flush=True)
         patterns.flush()
         _preview(config, apertures, patterns, strategies, nf, folder)
         groups.append({"name": group_name(nf), "nf": nf, "label_method": method})
@@ -650,11 +764,21 @@ def main():
                         help="原始光阑数，七组共用")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", default="data/v1")
+    parser.add_argument("--device", choices=("auto", "cuda", "cpu", "numpy"),
+                        default="auto",
+                        help="衍射传播加速设备（默认 auto：优先使用 GPU，无 GPU 时用 PyTorch CPU）")
+    parser.add_argument("--batch-size", type=int, default=16,
+                        help="批量计算衍射图样的 batch 大小")
+    parser.add_argument("--cpu-threads", type=int, default=4,
+                        help="CPU 线程数上限")
     parser.add_argument("--skip-validation", action="store_true",
                         help="跳过生成前的传播验证（不建议用于正式数据）")
     args = parser.parse_args()
     if args.samples < 24:
         parser.error("--samples 至少为 24（每类 3 个光阑）")
+    if args.batch_size < 1 or args.cpu_threads < 1:
+        parser.error("--batch-size 和 --cpu-threads 必须为正")
+    torch.set_num_threads(args.cpu_threads)
     config = config_from_args(args)
     nf_values = check_nf(args.nf)
     out = new_output(args.out)
@@ -670,7 +794,8 @@ def main():
         print("已跳过传播验证", flush=True)
         write_json(out / "validation.json", {"skipped": True})
 
-    manifest = generate(config, nf_values, args.samples, args.seed, out)
+    manifest = generate(config, nf_values, args.samples, args.seed, out,
+                        device=args.device, batch_size=args.batch_size)
     print(f"完成：{out}")
     print(f"划分：{manifest['split_counts']}")
 
