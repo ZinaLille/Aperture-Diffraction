@@ -11,7 +11,8 @@
 
 输出：
     summary.csv   per_sample.csv   metrics.txt
-    test_mae_comparison.png  samples.png  error_map.png  error_histogram.png
+    test_mae_comparison.png  samples.png  diversity.png
+    error_map.png  error_histogram.png
     extreme_test.png  sweep_slit_width.png  sweep_circle_radius.png  sweep_grating_period.png
 """
 
@@ -27,7 +28,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from generate import PhysicsConfig, geometry, image_metrics
+from generate import (PhysicsConfig, geometry, image_metrics, STRATEGIES,
+                      strategy_assignment)
 from train import (ForwardModel, FraunhoferDetectorLayer, AngularSpectrumDetectorLayer,
                    GroupData, choose_device, write_csv)
 
@@ -112,31 +114,108 @@ def plot_mae_comparison(summary, path):
     plt.close(fig)
 
 
-def plot_samples(datasets, previews, path):
-    """每个 NF 取一个测试样本：光阑 | 夫琅禾费 | 角谱 | physics | baseline | 标签。"""
-    names = ["fraunhofer_only", "asm_only", "physics", "baseline"]
-    names = [name for name in names if any(name in preview for preview in previews.values())]
+def plot_samples(datasets, methods_by_group, device, strategies, path):
+    """每个 NF 取一个不同策略的测试样本：光阑 | 标签 | 各方法预测。"""
     groups = list(datasets)
-    cols = 1 + len(names) + 1
+    available = list(dict.fromkeys(
+        name for methods in methods_by_group.values() for name in methods))
+    method_names = [name for name in ("fraunhofer_only", "asm_only", "physics", "baseline")
+                    if name in available]
+    cols = 2 + len(method_names)
     fig, axes = plt.subplots(len(groups), cols,
-                             figsize=(2.8 * cols, 2.7 * len(groups)), squeeze=False)
+                             figsize=(2.7 * cols, 2.5 * len(groups)), squeeze=False)
     for row, name in enumerate(groups):
         dataset = datasets[name]
-        index = row % min(2, len(dataset))
-        aperture, target, _, ident = dataset[index]
-        images = [(aperture[0].numpy(), "Aperture")]
-        for method in names:
-            prediction = next(pred for i, pred in previews[name][method] if i == ident)
-            images.append((prediction, f"{method}\nMAE={np.mean(abs(prediction - target[0].numpy())):.1e}"))
-        images.append((target[0].numpy(), "Label"))
-        for col, (value, title) in enumerate(images):
-            axes[row, col].imshow(value, cmap="gray" if col == 0 else "inferno", vmin=0, vmax=1)
+        methods = methods_by_group[name]
+        strategy = STRATEGIES[row % len(STRATEGIES)]
+        picks = select_strategy_ids(dataset, strategies, 1)
+        match = [ident for label, ident in picks if label == strategy]
+        if match:
+            ident = match[0]
+        else:
+            ident = int(dataset.ids[0])
+            strategy = "unknown"
+        item = sample_predictions(dataset, methods, device, [(strategy, ident)])[0]
+        images = [(item["aperture"], "gray", f"{strategy}\nid={item['id']}"),
+                  (item["target"], "inferno", "label")]
+        for method in method_names:
+            if method in item["preds"]:
+                pred = item["preds"][method]
+                images.append((pred, "inferno",
+                               f"{method}\nMAE={np.mean(np.abs(pred - item['target'])):.1e}"))
+            else:
+                images.append((np.zeros_like(item["target"]), "inferno",
+                               method + "\n(n/a)"))
+        for col, (value, cmap, title) in enumerate(images):
+            axes[row, col].imshow(value, cmap=cmap, vmin=0, vmax=1)
             axes[row, col].set_title(title, fontsize=8)
             axes[row, col].axis("off")
         axes[row, 0].set_ylabel(f"NF={dataset.nf:g}", fontsize=9)
-    fig.suptitle("Test samples; common [0,1] display range", fontsize=15)
+    fig.suptitle("Test samples: one different aperture strategy per NF group",
+                 fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(path, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+
+
+def select_strategy_ids(dataset, strategies, per_strategy=1):
+    """每个策略从当前划分取 per_strategy 个样本；跳过该划分里没有的类。"""
+    buckets = {name: [] for name in STRATEGIES}
+    for ident in dataset.ids.tolist():
+        ident = int(ident)
+        if 0 <= ident < len(strategies):
+            buckets[strategies[ident]].append(ident)
+    picks = []
+    for name in STRATEGIES:
+        picks.extend((name, ident) for ident in buckets[name][:per_strategy])
+    return picks
+
+
+@torch.no_grad()
+def sample_predictions(dataset, methods, device, picks):
+    """给定 (strategy, id) 列表，返回光阑、标签与各方法预测。"""
+    index = {int(ident): k for k, ident in enumerate(dataset.ids.tolist())}
+    rows = []
+    for strategy, ident in picks:
+        if ident not in index:
+            continue
+        aperture, target, condition, _ = dataset[index[ident]]
+        a = aperture[None].to(device)
+        condition = condition[None].to(device)
+        z = dataset.z_tensor([ident], device)
+        rows.append({
+            "strategy": strategy,
+            "id": int(ident),
+            "aperture": aperture[0].numpy(),
+            "target": target[0].numpy(),
+            "preds": {name: predict(model, pure, a, condition, z)[0, 0].cpu().numpy()
+                      for name, (model, pure) in methods.items()},
+        })
+    return rows
+
+
+def plot_diversity(rows, nf, path):
+    """八种光阑生成策略的多样性：每个策略一行，光阑 | 标签 | 各方法预测。"""
+    if not rows:
+        return
+    method_names = list(rows[0]["preds"])
+    cols = 2 + len(method_names)
+    fig, axes = plt.subplots(len(rows), cols,
+                             figsize=(2.7 * cols, 2.3 * len(rows)), squeeze=False)
+    for row, item in enumerate(rows):
+        images = [(item["aperture"], "gray",
+                   f"{item['strategy']}\nid={item['id']}"),
+                  (item["target"], "inferno", f"label NF={nf:g}")]
+        images += [(item["preds"][name], "inferno",
+                    f"{name}\nMAE={np.mean(np.abs(item['preds'][name] - item['target'])):.1e}")
+                   for name in method_names]
+        for col, (value, cmap, title) in enumerate(images):
+            axes[row, col].imshow(value, cmap=cmap, vmin=0, vmax=1)
+            axes[row, col].set_title(title, fontsize=8)
+            axes[row, col].axis("off")
+    fig.suptitle(f"Eight aperture-generation strategies, NF={nf:g}", fontsize=14)
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(path, dpi=110, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -386,6 +465,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--shape-nf", type=float, default=1.0,
                         help="极端形状与参数扫描使用的 NF 组（取最近的一组）")
+    parser.add_argument("--diversity-per-strategy", type=int, default=1,
+                        help="diversity.png 中每个光阑策略展示几个测试样本")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--cpu-threads", type=int, default=4)
     args = parser.parse_args()
@@ -402,6 +483,12 @@ def main():
         groups = [g for g in groups if g["nf"] in wanted]
         if not groups:
             parser.error("--groups 指定的 NF 不在数据集中")
+    if args.diversity_per_strategy < 1:
+        parser.error("--diversity-per-strategy 必须 >= 1")
+    # 生成时先 round-robin 再 shuffle，shuffle 只依赖 manifest 的 seed，可无损复现。
+    strategies = strategy_assignment(manifest["samples"], manifest.get("seed", 42))
+    if len(strategies) != manifest["samples"]:
+        raise SystemExit("无法从 manifest 的 samples/seed 复现光阑策略分配")
 
     torch.set_num_threads(args.cpu_threads)
     device = choose_device(args.device)
@@ -411,9 +498,11 @@ def main():
     out.mkdir(parents=True)
 
     summary, per_sample_rows, datasets, previews = [], [], {}, {}
+    methods_by_group = {}
     for group in groups:
         dataset = GroupData(root, group["name"], args.split)
         methods = methods_for_group(root, group["name"], dataset, args.run, device)
+        methods_by_group[group["name"]] = methods
         rows, preview = evaluate_group(dataset, methods, device, args.batch_size)
         datasets[group["name"]] = dataset
         previews[group["name"]] = preview
@@ -429,7 +518,8 @@ def main():
     write_csv(out / "summary.csv", summary)
     write_csv(out / "per_sample.csv", per_sample_rows)
     plot_mae_comparison(summary, out / "test_mae_comparison.png")
-    plot_samples(datasets, previews, out / "samples.png")
+    plot_samples(datasets, methods_by_group, device, strategies,
+                 out / "samples.png")
     plot_error_histogram(summary, {name: [row for row in per_sample_rows if row["method"] == name]
                                    for name in dict.fromkeys(row["method"] for row in summary)},
                          out / "error_histogram.png")
@@ -440,6 +530,12 @@ def main():
     dataset = datasets[group["name"]]
     methods = methods_for_group(root, group["name"], dataset, args.run, device)
     plot_error_map(dataset, methods, previews[group["name"]], out / "error_map.png")
+
+    # 八种光阑生成策略的多样性可视化（每个策略取 --diversity-per-strategy 个样本）。
+    diversity_picks = select_strategy_ids(dataset, strategies,
+                                          args.diversity_per_strategy)
+    diversity_rows = sample_predictions(dataset, methods, device, diversity_picks)
+    plot_diversity(diversity_rows, target_nf, out / "diversity.png")
 
     shapes = standard_shapes(dataset.config.grid)
     outputs = shape_runner(methods, dataset, device, target_nf, shapes)
@@ -473,7 +569,8 @@ def main():
                       f"{(baseline - physics) / max(baseline, 1e-12) * 100:+.2f}%。"]
     lines += ["", "近场标签由角谱生成，纯角谱误差接近零属于同源算子一致性；",
               "它不能单独证明神经网络的泛化收益。远场标签用点采样 FFT，与角谱存在像素积分差异。",
-              "", "![误差对比](test_mae_comparison.png)"]
+              "", "![误差对比](test_mae_comparison.png)",
+              "", "![策略多样性](diversity.png)"]
     (out / "metrics.txt").write_text("\n".join(lines), encoding="utf-8")
 
     print(f"评估完成：{out}")

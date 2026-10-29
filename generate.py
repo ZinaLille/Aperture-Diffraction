@@ -442,6 +442,17 @@ STRATEGY_FUNCS = {
 }
 
 
+def strategy_assignment(samples, seed=42):
+    """复现 generate() 内部的光阑策略分配（只依赖 samples 与 seed）。
+
+    生成时先 round-robin 再 shuffle；shuffle 是 RandomState(seed) 的第一次使用，
+    因此可以从 manifest 的 samples/seed 还原每个光阑属于哪一类，无需改数据格式。
+    """
+    strategies = [STRATEGIES[i % len(STRATEGIES)] for i in range(samples)]
+    np.random.RandomState(seed).shuffle(strategies)
+    return strategies
+
+
 def make_aperture(strategy, rng, grid=256):
     a = np.zeros((256, 256), dtype=np.float32)
     STRATEGY_FUNCS[strategy](a, rng, 256)

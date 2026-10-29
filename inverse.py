@@ -16,6 +16,20 @@
         --pattern path/to/pattern.npy \
         --nf 1 \
         --out inverse_runs/case_nf1
+
+    离线生成测试用例（只写 pattern/gt，不反演）：
+    python inverse.py --write-cases inverse_runs/cases --nf 1 --case-scale 0.5
+
+损失调度（默认 --loss-schedule phased）：
+    - [0, fit)          只拟合数据（L1 + 相关系数 + log 频谱 + 低频大方向），形状先验恒为 0；
+    - [fit, prior)      平滑（TV/Laplacian）、面积、连通性先验按各自窗口渐入；
+    - [prior, detail)   二值、开运算、小岛先验渐入，配合 STE 与更小的平滑尺度收细节；
+    - 先验总权重按 EMA 自适应，保持“先验 / 空间 L1”的固定占比（默认 0.25）。
+    --loss-schedule fixed 可复现旧的固定权重行为。
+
+配对光阑仅用于对比（不参与网络输入）：
+    --expected / --expected-sample 给出参考光阑，运行结束后生成
+    expected_vs_top1.png 和诊断数字；网络输入始终只有 --pattern。
 """
 
 from __future__ import annotations
@@ -33,7 +47,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw
 from torch import nn
 
 import matplotlib
@@ -41,7 +55,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from generate import PhysicsConfig, group_name, postprocess
+from generate import (PhysicsConfig, angular_spectrum_raw, fraunhofer_raw,
+                      geometry, group_name, postprocess)
 from train import (AngularSpectrumDetectorLayer, ForwardModel,
                    FraunhoferDetectorLayer, choose_device)
 
@@ -317,6 +332,165 @@ def load_pattern(path: str | Path, grid: int,
     return tensor.clamp(0.0, 1.0)
 
 
+def _as_aperture_tensor(array: np.ndarray, grid: int) -> torch.Tensor:
+    """把参考光阑转成 [1,1,grid,grid] 二值 mask。"""
+    array = np.array(array, dtype=np.float32, copy=True)
+    if array.ndim == 3:
+        array = array[0]
+    if array.ndim != 2:
+        raise ValueError(f"预期光阑必须是 2D，当前形状 {array.shape}")
+    if not np.isfinite(array).all():
+        raise ValueError("预期光阑包含非有限值")
+    peak = float(array.max())
+    if peak > 1.0 + 1e-6:
+        array = array / peak
+    tensor = torch.from_numpy(array)[None, None]
+    if tensor.shape[-2:] != (grid, grid):
+        tensor = F.interpolate(tensor, size=(grid, grid), mode="bilinear",
+                               align_corners=False)
+    mask = (tensor > 0.5).float()
+    if float(mask.sum()) <= 0:
+        raise ValueError("预期光阑为空（没有 >0.5 的像素）")
+    return mask
+
+
+def load_reference_aperture(path: str | Path, grid: int) -> torch.Tensor:
+    """读取“预期光阑”（.npy / .png）；只用于对比，不进入优化。"""
+    path = Path(path).expanduser()
+    if not path.is_file():
+        raise FileNotFoundError(f"预期光阑不存在：{path}")
+    if path.suffix.lower() == ".npy":
+        array = np.squeeze(np.load(path))
+        return _as_aperture_tensor(array, grid)
+    image = Image.open(path).convert("L")
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    return _as_aperture_tensor(array, grid)
+
+
+def load_reference_sample(dataset: str | Path, index: int,
+                          grid: int) -> torch.Tensor:
+    """从 data/*/apertures.npy 取指定样本作为预期光阑（只用于对比）。"""
+    root = Path(dataset).expanduser()
+    path = root / "apertures.npy"
+    if not path.is_file():
+        raise FileNotFoundError(f"找不到 apertures.npy：{path}")
+    apertures = np.load(path, mmap_mode="r")
+    if not 0 <= index < len(apertures):
+        raise ValueError(f"样本编号 {index} 超出范围 [0,{len(apertures) - 1}]")
+    array = np.asarray(apertures[index], dtype=np.float32)
+    return _as_aperture_tensor(array, grid)
+
+
+# ============================================================
+# 1.4 测试用例生成（离线，只写 pattern/gt，不参与反演）
+# ============================================================
+def _case_canvas(size, supersample=4):
+    scale = max(int(supersample), 1)
+    n = size * scale
+    image = Image.new("L", (n, n), 0)
+    return image, ImageDraw.Draw(image), n
+
+
+def _case_finish(image, size):
+    array = np.asarray(image.resize((size, size), Image.BILINEAR),
+                       dtype=np.float32) / 255.0
+    aperture = (array > 0.5).astype(np.float32)
+    if not aperture.any():
+        raise ValueError("光阑为空")
+    return aperture
+
+
+def _case_digit_zero(size=256, supersample=4, scale=1.0):
+    image, draw, n = _case_canvas(size, supersample)
+    cx, cy = n / 2, n / 2
+    rx, ry, thick = 0.235 * n * scale, 0.315 * n * scale, 0.055 * n * scale
+    draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=255)
+    draw.ellipse([cx - rx + thick, cy - ry + thick,
+                  cx + rx - thick, cy + ry - thick], fill=0)
+    return _case_finish(image, size)
+
+
+def _case_digit_eight(size=256, supersample=4, scale=1.0):
+    image, draw, n = _case_canvas(size, supersample)
+    cx, cy = n / 2, n / 2
+    half_w, half_h = 0.215 * n * scale, 0.165 * n * scale
+    thick = 0.05 * n * scale
+    for offset in (-0.155 * n * scale, 0.155 * n * scale):
+        draw.ellipse([cx - half_w, cy + offset - half_h,
+                      cx + half_w, cy + offset + half_h], fill=255)
+    for offset in (-0.155 * n * scale, 0.155 * n * scale):
+        draw.ellipse([cx - half_w + thick, cy + offset - half_h + thick,
+                      cx + half_w - thick, cy + offset + half_h - thick], fill=0)
+    return _case_finish(image, size)
+
+
+def _case_disk(size=256, supersample=4, scale=1.0):
+    image, draw, n = _case_canvas(size, supersample)
+    cx, cy, radius = n / 2, n / 2, 0.24 * n * scale
+    draw.ellipse([cx - radius, cy - radius, cx + radius, cy + radius], fill=255)
+    return _case_finish(image, size)
+
+
+def _case_polygon(sides):
+    def make(size=256, supersample=4, scale=1.0):
+        image, draw, n = _case_canvas(size, supersample)
+        cx, cy, radius = n / 2, n / 2, 0.25 * n * scale
+        points = []
+        for k in range(sides):
+            angle = 2.0 * np.pi * k / sides - np.pi / 2.0
+            points.append((cx + radius * np.cos(angle),
+                           cy + radius * np.sin(angle)))
+        draw.polygon(points, fill=255)
+        return _case_finish(image, size)
+    return make
+
+
+CASE_BUILDERS = {
+    "digit0": _case_digit_zero,
+    "digit8": _case_digit_eight,
+    "disk": _case_disk,
+    "triangle": _case_polygon(3),
+    "square": _case_polygon(4),
+    "pentagon": _case_polygon(5),
+    "hexagon": _case_polygon(6),
+    "octagon": _case_polygon(8),
+}
+
+
+def write_cases(out: str | Path, shapes, nf: float = 1.0, grid: int = 256,
+                scale: float = 0.5):
+    """生成测试用例：gt.npy / pattern.npy / meta.json。
+
+    这是离线数据准备；反演只读 pattern.npy，gt.npy 仅用于 --expected 对比。
+    """
+    config = PhysicsConfig(grid=grid)
+    root = Path(out).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    suffix = f"_nf{nf:g}" + ("" if scale == 1.0 else f"_s{scale:g}")
+    for name in shapes:
+        if name not in CASE_BUILDERS:
+            raise ValueError(f"未知用例：{name}")
+        aperture = CASE_BUILDERS[name](grid, scale=scale)
+        geo = geometry(aperture, nf, config)
+        raw = (fraunhofer_raw(aperture, geo["z_m"], config)
+               if nf < config.far_threshold
+               else angular_spectrum_raw(aperture, geo["z_m"], config))
+        pattern = postprocess(raw, config.log_alpha)
+        folder = root / f"{name}{suffix}"
+        folder.mkdir(exist_ok=True)
+        np.save(folder / "gt.npy", aperture)
+        np.save(folder / "pattern.npy", pattern.astype(np.float32))
+        write_json(folder / "meta.json", {
+            "name": name, "nf": nf, "grid": grid, "scale": scale,
+            "z_m": geo["z_m"], "D_m": geo["D_m"],
+            "detector_pitch_m": geo["detector_pitch_m"],
+            "area_fraction": float(aperture.mean()),
+            "note": "gt.npy/pattern.npy 只用于离线用例；inverse 只读 pattern.npy",
+        })
+        print(f"{name}: {folder}  z={geo['z_m']:.4f} m  "
+              f"area={aperture.mean():.3f}")
+
+
 # ============================================================
 # 2. 几何后处理
 # ============================================================
@@ -422,6 +596,19 @@ def _rectangle_mask(shape: Tuple[int, int], component: Component,
     return ((np.abs(xr) <= half_w) & (np.abs(yr) <= half_h)).astype(np.float32)
 
 
+def remove_small_components(mask: np.ndarray, min_area: int = 12,
+                            max_components: int = 64) -> np.ndarray:
+    """只保留面积 >= min_area 的连通域（输出平滑前先去散点）。"""
+    mask = np.asarray(mask > 0.5, dtype=np.float32)
+    output = np.zeros_like(mask)
+    for component in _components(mask, min_area=1,
+                                 max_components=max_components):
+        if component.area >= min_area:
+            output[component.rows.astype(int),
+                   component.cols.astype(int)] = 1.0
+    return output
+
+
 def clean_aperture(mask: np.ndarray, mode: str = "ellipse",
                    min_area: int = 12, max_fit_area: int = 1200,
                    min_solidity: float = 0.5,
@@ -483,7 +670,7 @@ class InversionConfig:
     nf: float
     grid: int = 256
     scales: Tuple[int, ...] = (64, 128, 256)
-    steps: Tuple[int, ...] = (120, 120, 200)
+    steps: Tuple[int, ...] = (240, 240, 480)
     lrs: Tuple[float, ...] = (0.05, 0.02, 0.01)
     restarts: int = 4
     top_k: int = 3
@@ -493,12 +680,41 @@ class InversionConfig:
     geometry_every: int = 10
 
     temperature_start: float = 1.0
-    temperature_end: float = 0.1
-    ste_steps: int = 80
+    temperature_end: float = 0.35
+    ste_steps: int = 160
 
-    lambda_freq: float = 0.1
+    # 损失调度：前期只拟合大方向，后期逐项加入并加强形状约束。
+    loss_schedule: str = "phased"        # phased | fixed
+    fit_fraction: float = 0.30           # [0, fit)：只拟合数据
+    prior_fraction: float = 0.60         # [fit, prior)：平滑/面积/连通性渐入
+    detail_fraction: float = 0.85        # [prior, detail)：二值/形态学渐入
+    prior_ratio: float = 0.25            # 先验总权重 / 空间 L1 的目标占比
+    prior_gain_min: float = 0.0
+    prior_gain_max: float = 50.0
+    ema_decay: float = 0.90
+    lambda_coarse: float = 0.25          # 前期低频数据项（大方向）权重
+    coarse_kernel: int = 9
+    sigma_coarse_scale: float = 1.6      # 粗阶段平滑尺度（相对 smooth_sigma）
+    sigma_detail_scale: float = 1.0      # 细节阶段平滑尺度（不锐化，保持平滑边缘）
+    edge_sigma: float = 1.5              # 结束后的边缘平滑（像素），0=关闭
+
+    # 后段几何参数化：椭圆/正多边形基元并集 − 孔洞，参数少、边界天然平滑。
+    geometric_stage: bool = True
+    geom_primitive: str = "ellipse"      # ellipse | polygon
+    geom_sides: int = 6                  # polygon 模式的边数
+    geom_max_positive: int = 8
+    geom_max_negative: int = 4
+    geom_steps: int = 300
+    geom_lr: float = 0.02
+    geom_softness: float = 25.0
+    geom_min_area: int = 20
+    geom_support_weight: float = 0.01
+    geom_area_weight: float = 0.005
+
+    lambda_freq: float = 0.02
+    lambda_corr: float = 0.5
     lambda_tv: float = 1e-3
-    lambda_lap: float = 1e-3
+    lambda_lap: float = 3e-3
     lambda_perim: float = 1e-3
     lambda_bin: float = 1e-3
     lambda_open: float = 1e-3
@@ -512,7 +728,7 @@ class InversionConfig:
     smooth_sigma: float = 1.0
     island_kernel: int = 7
     island_min_mass: float = 6.0
-    primitive_fit: str = "ellipse"       # none | ellipse | rect
+    primitive_fit: str = "none"          # none | ellipse | rect
     primitive_min_area: int = 20
     primitive_max_fit_area: int = 4000
     primitive_min_solidity: float = 0.2
@@ -544,10 +760,46 @@ class InversionConfig:
         if min(self.lambda_tv, self.lambda_lap, self.lambda_perim,
                self.lambda_bin, self.lambda_open, self.lambda_open5,
                self.lambda_island, self.lambda_area,
-               self.lambda_area_center, self.lambda_res) < 0:
+               self.lambda_area_center, self.lambda_res,
+               self.lambda_freq, self.lambda_corr) < 0:
             raise ValueError("损失权重不能为负")
         if self.island_kernel < 3 or self.island_kernel % 2 == 0:
             raise ValueError("island_kernel 必须是 >=3 的奇数")
+        if self.loss_schedule not in ("phased", "fixed"):
+            raise ValueError("loss_schedule 必须是 phased 或 fixed")
+        if not 0.0 <= self.fit_fraction < self.prior_fraction <= self.detail_fraction <= 1.0:
+            raise ValueError("必须满足 0 <= fit_fraction < prior_fraction "
+                             "<= detail_fraction <= 1")
+        if not 0.0 <= self.prior_gain_min <= self.prior_gain_max:
+            raise ValueError("prior_gain_min/max 必须非负且 min <= max")
+        if self.prior_ratio < 0:
+            raise ValueError("prior_ratio 不能为负")
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError("ema_decay 必须在 [0,1) 内")
+        if self.lambda_coarse < 0:
+            raise ValueError("lambda_coarse 不能为负")
+        if self.coarse_kernel < 3 or self.coarse_kernel % 2 == 0:
+            raise ValueError("coarse_kernel 必须是 >=3 的奇数")
+        if self.sigma_coarse_scale <= 0 or self.sigma_detail_scale <= 0:
+            raise ValueError("sigma 缩放系数必须为正")
+        if self.edge_sigma < 0:
+            raise ValueError("edge_sigma 不能为负")
+        if not 0.0 < self.temperature_end <= 2.0:
+            raise ValueError("temperature_end 必须在 (0,2] 内")
+        if self.geom_steps < 0:
+            raise ValueError("geom_steps 不能为负")
+        if self.geom_lr <= 0 or self.geom_softness <= 0:
+            raise ValueError("geom_lr / geom_softness 必须为正")
+        if self.geom_max_positive < 1 or self.geom_max_negative < 0:
+            raise ValueError("geom 基元数量不合法")
+        if self.geom_min_area < 1:
+            raise ValueError("geom_min_area 必须 >=1")
+        if self.geom_support_weight < 0 or self.geom_area_weight < 0:
+            raise ValueError("geom 正则权重不能为负")
+        if self.geom_primitive not in ("ellipse", "polygon"):
+            raise ValueError("geom_primitive 必须是 ellipse 或 polygon")
+        if self.geom_sides < 3:
+            raise ValueError("geom_sides 必须 >=3")
         if self.primitive_fit not in ("none", "ellipse", "rect"):
             raise ValueError("primitive_fit 必须是 none/ellipse/rect")
 
@@ -577,6 +829,8 @@ class Candidate:
     pairwise_iou: Dict[int, float] = field(default_factory=dict)
     primitive_components: int = 0
     primitive_info: Dict = field(default_factory=dict)
+    loss_gain: float = 1.0
+    coarse_loss: float = 0.0
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -597,16 +851,33 @@ class Candidate:
             "runtime_s": self.runtime_s,
             "primitive_components": self.primitive_components,
             "primitive_info": self.primitive_info,
+            "loss_gain": self.loss_gain,
+            "coarse_loss": self.coarse_loss,
         }
 
 
 # ============================================================
 # 3.2 可微物理先验
 # ============================================================
+def correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """尺度不变的相关系数损失；避免“空光阑/大光斑”这类平凡解占便宜。"""
+    p = pred.flatten(1)
+    t = target.flatten(1)
+    p = p - p.mean(dim=1, keepdim=True)
+    t = t - t.mean(dim=1, keepdim=True)
+    numerator = (p * t).sum(dim=1)
+    denominator = (p.square().sum(dim=1).sqrt() *
+                   t.square().sum(dim=1).sqrt()).clamp_min(1e-12)
+    return (1.0 - numerator / denominator).mean()
+
+
 def pattern_loss(pred: torch.Tensor, target: torch.Tensor,
-                 lambda_freq: float = 0.1):
-    """L1 + log 频谱 L1，和 train.py 的标签域一致。"""
+                 lambda_freq: float = 0.02,
+                 lambda_corr: float = 0.5):
+    """L1 + 相关系数 + log 频谱 L1。"""
     l1 = F.l1_loss(pred, target)
+    corr = (correlation_loss(pred, target) if lambda_corr > 0
+            else pred.new_zeros(()))
     if lambda_freq > 0:
         f_pred = torch.fft.fft2(pred[:, 0])
         f_target = torch.fft.fft2(target[:, 0])
@@ -614,7 +885,8 @@ def pattern_loss(pred: torch.Tensor, target: torch.Tensor,
                          torch.log1p(f_target.abs()))
     else:
         freq = pred.new_zeros(())
-    return l1 + lambda_freq * freq, l1, freq
+    total = l1 + lambda_freq * freq + lambda_corr * corr
+    return total, l1, freq, corr
 
 
 def tv_loss(aperture: torch.Tensor) -> torch.Tensor:
@@ -695,16 +967,69 @@ def area_hinge(aperture: torch.Tensor, low: float, high: float) -> torch.Tensor:
     return (F.relu(low - area).square() + F.relu(area - high).square()).mean()
 
 
-def prior_schedule(progress: float) -> Tuple[float, float]:
-    """二值项全程渐强；开运算项后 85% 才逐渐加入。"""
+def coarse_pattern_loss(pred: torch.Tensor, target: torch.Tensor,
+                        kernel: int = 9) -> torch.Tensor:
+    """低频数据项：低通后的 L1，在大方向阶段帮助先定轮廓。"""
+    kernel = max(int(kernel), 3)
+    if kernel % 2 == 0:
+        kernel += 1
+    low_pred = F.avg_pool2d(pred, kernel, stride=1, padding=kernel // 2)
+    low_target = F.avg_pool2d(target, kernel, stride=1, padding=kernel // 2)
+    return F.l1_loss(low_pred, low_target)
+
+
+def smoothstep(value: float) -> float:
+    """0..1 的平滑过渡。"""
+    value = float(np.clip(value, 0.0, 1.0))
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _ramp(progress: float, start: float, end: float) -> float:
+    if end <= start + 1e-9:
+        return 1.0 if progress >= end else 0.0
+    return smoothstep((float(progress) - start) / (end - start))
+
+
+def loss_factors(progress: float, cfg: InversionConfig) -> Dict[str, float]:
+    """各损失项在当前进度的相对权重（0..1）。
+
+    phased（默认）：
+        [0, fit)        粗项 1→0，形状先验全 0：只拟合数据和大方向；
+        [fit, prior)    平滑/面积先验先到满权重，连通性（perim/island）稍后；
+        [prior, detail) 二值/形态学先验收细节；
+        [detail, 1]     全部满权重，交给 STE 与更小的 smooth_sigma。
+    fixed：复现旧行为（二值项 0.2→1，开运算 15% 后渐入）。
+    """
     progress = float(np.clip(progress, 0.0, 1.0))
-    binary_weight = 0.2 + 0.8 * progress
-    opening_weight = max(0.0, (progress - 0.15) / 0.85)
-    return binary_weight, opening_weight
+    if cfg.loss_schedule == "fixed":
+        opening = max(0.0, (progress - 0.15) / 0.85)
+        return {"coarse": 0.0, "tv": 1.0, "lap": 1.0, "perim": 1.0,
+                "island": 1.0, "area": 1.0, "area_center": 1.0,
+                "bin": 0.2 + 0.8 * progress, "open": opening,
+                "open5": opening}
+    f1, f2, f3 = cfg.fit_fraction, cfg.prior_fraction, cfg.detail_fraction
+    span = max(f2 - f1, 1e-6)
+    smoothing = _ramp(progress, f1, f1 + 0.60 * span)
+    structure = _ramp(progress, f1 + 0.35 * span, f2)
+    detail = _ramp(progress, f2, f3)
+    coarse = 1.0 - _ramp(progress, f1, f1 + 0.50 * span)
+    # 面积护栏（只惩罚 <0.2% 或 >60% 的退化面积）全程生效，
+    # 防止“无形状先验”的前期把光阑整块压没或撑满。
+    return {"coarse": coarse, "tv": smoothing, "lap": smoothing,
+            "perim": structure, "island": structure,
+            "area": 1.0, "area_center": smoothing,
+            "bin": detail, "open": detail, "open5": detail}
 
 
 def prior_loss(aperture: torch.Tensor, cfg: InversionConfig,
-               progress: float, area_target: Optional[float] = None):
+               progress: float, area_target: Optional[float] = None,
+               factors: Optional[Dict[str, float]] = None):
+    """形状先验：返回 (按当前因子加权的先验, 统计)。
+
+    总权重再由调用方乘以自适应 gain（见 run_restart），
+    这样“先验 / 空间 L1”的占比在训练中可以动态保持。
+    """
+    factors = factors or loss_factors(progress, cfg)
     tv = tv_loss(aperture)
     lap = laplacian_loss(aperture)
     perimeter = perimeter_ratio(aperture)
@@ -714,36 +1039,36 @@ def prior_loss(aperture: torch.Tensor, cfg: InversionConfig,
     island = island_loss(aperture, kernel=cfg.island_kernel,
                          min_mass=cfg.island_min_mass)
     area = area_hinge(aperture, cfg.area_low, cfg.area_high)
-    binary_weight, opening_weight = prior_schedule(progress)
-    total = (cfg.lambda_tv * tv +
-             cfg.lambda_lap * lap +
-             cfg.lambda_perim * perimeter +
-             cfg.lambda_bin * binary_weight * binary +
-             cfg.lambda_open * opening_weight * opening +
-             cfg.lambda_open5 * opening_weight * opening5 +
-             cfg.lambda_island * island +
-             cfg.lambda_area * area)
+    terms = {
+        "tv": cfg.lambda_tv * tv,
+        "lap": cfg.lambda_lap * lap,
+        "perim": cfg.lambda_perim * perimeter,
+        "bin": cfg.lambda_bin * binary,
+        "open": cfg.lambda_open * opening,
+        "open5": cfg.lambda_open5 * opening5,
+        "island": cfg.lambda_island * island,
+        "area": cfg.lambda_area * area,
+    }
     if cfg.lambda_area_center > 0 and area_target is not None:
         area_value = aperture.mean(dim=(1, 2, 3)).clamp_min(1e-6)
         area_center = (torch.log(area_value) -
                        math.log(max(float(area_target), 1e-6))).square().mean()
-        total = total + cfg.lambda_area_center * area_center
+        terms["area_center"] = cfg.lambda_area_center * area_center
     else:
         area_center = aperture.new_zeros(())
-    stats = {
-        "tv": float(tv.detach()),
-        "lap": float(lap.detach()),
-        "perim": float(perimeter.detach()),
-        "bin": float(binary.detach()),
-        "open": float(opening.detach()),
-        "open5": float(opening5.detach()),
-        "island": float(island.detach()),
-        "area": float(area.detach()),
-        "area_center": float(area_center.detach()),
-        "bin_w": binary_weight,
-        "open_w": opening_weight,
-    }
-    return total, stats
+        terms["area_center"] = area_center
+    raw = sum(terms.values())
+    ramped = sum(terms[key] * factors[key] for key in terms)
+    stats = {key: float(value.detach()) for key, value in terms.items()}
+    stats.update({
+        "prior_raw": float(raw.detach()),
+        "prior_ramped": float(ramped.detach()),
+        "f_tv": float(factors["tv"]),
+        "f_perim": float(factors["perim"]),
+        "f_bin": float(factors["bin"]),
+        "f_coarse": float(factors["coarse"]),
+    })
+    return ramped, stats
 
 
 # ============================================================
@@ -762,20 +1087,29 @@ class PixelField(nn.Module):
         super().__init__()
         self.theta = nn.Parameter(theta)
         self.temperature = 1.0
-        self.smooth_sigma = float(smooth_sigma)
-        self.blur_radius = max(1, int(math.ceil(3.0 * self.smooth_sigma))) \
-            if self.smooth_sigma > 0 else 0
-        if self.blur_radius > 0:
-            coords = torch.arange(-self.blur_radius, self.blur_radius + 1,
-                                  dtype=torch.float32)
-            kernel = torch.exp(-coords.square() /
-                               (2.0 * self.smooth_sigma ** 2))
-            kernel = kernel / kernel.sum()
-            kernel = (kernel[:, None] * kernel[None, :])[None, None]
-            kernel = kernel.repeat(theta.shape[1], 1, 1, 1)
-            self.register_buffer("blur_kernel", kernel, persistent=False)
-        else:
-            self.register_buffer("blur_kernel", torch.empty(0), persistent=False)
+        self.register_buffer("blur_kernel", torch.empty(0, device=theta.device),
+                             persistent=False)
+        self._build_kernel(float(smooth_sigma))
+
+    def _build_kernel(self, sigma: float):
+        """重建固定高斯核；sigma 随训练阶段变化时调用，不产生梯度。"""
+        sigma = float(max(sigma, 0.0))
+        self.smooth_sigma = sigma
+        self.blur_radius = max(1, int(math.ceil(3.0 * sigma))) if sigma > 0 else 0
+        if self.blur_radius == 0:
+            self.blur_kernel = torch.empty(0, device=self.theta.device)
+            return
+        coords = torch.arange(-self.blur_radius, self.blur_radius + 1,
+                              dtype=torch.float32, device=self.theta.device)
+        kernel = torch.exp(-coords.square() / (2.0 * sigma ** 2))
+        kernel = kernel / kernel.sum()
+        kernel = (kernel[:, None] * kernel[None, :])[None, None]
+        self.blur_kernel = kernel.repeat(self.theta.shape[1], 1, 1, 1)
+
+    def set_sigma(self, sigma: float):
+        """训练中切换平滑尺度：粗阶段更平滑，细节阶段更锐利。"""
+        if abs(float(sigma) - self.smooth_sigma) > 1e-6:
+            self._build_kernel(float(sigma))
 
     def forward(self, size: int) -> torch.Tensor:
         logits = self.theta
@@ -796,6 +1130,197 @@ def resize_theta(theta: torch.Tensor, size: int) -> torch.Tensor:
         return theta
     return F.interpolate(theta, size=(size, size), mode="bilinear",
                          align_corners=False)
+
+
+def blur_mask(mask: torch.Tensor, sigma: float) -> torch.Tensor:
+    """对输出光阑做高斯平滑，得到平滑边缘；不参与梯度、不训练。"""
+    if sigma <= 0:
+        return mask
+    radius = max(1, int(round(3.0 * sigma)))
+    coords = torch.arange(-radius, radius + 1, dtype=mask.dtype,
+                          device=mask.device)
+    kernel = torch.exp(-coords.square() / (2.0 * sigma * sigma))
+    kernel = kernel / kernel.sum()
+    kernel = (kernel[:, None] * kernel[None, :])[None, None]
+    kernel = kernel.repeat(mask.shape[1], 1, 1, 1)
+    padded = F.pad(mask, (radius, radius, radius, radius), mode="reflect")
+    return F.conv2d(padded, kernel, groups=mask.shape[1])
+
+
+class PrimitiveField(torch.nn.Module):
+    """后段几何参数化：基元并集 −（孔洞并集），渲染成平滑光阑。
+
+    primitive="ellipse"：每个基元 (cx, cy, rx, ry, angle)；
+    primitive="polygon"：每个基元 (cx, cy, R, angle)，所有基元共用一个边数 sides。
+    内部场 >0，用 max 求并集、sigmoid 生成平滑边界。
+    """
+
+    def __init__(self, positives, negatives=None, softness: float = 25.0,
+                 primitive: str = "ellipse", sides: int = 6):
+        super().__init__()
+        self.softness = float(softness)
+        self.primitive = primitive
+        self.sides = int(sides)
+        self.pos_raw = nn.Parameter(
+            torch.as_tensor(np.asarray(positives, np.float32)))
+        if negatives is not None and len(negatives):
+            self.neg_raw = nn.Parameter(
+                torch.as_tensor(np.asarray(negatives, np.float32)))
+        else:
+            self.neg_raw = None
+
+    @staticmethod
+    def _ellipse_fields(params: torch.Tensor, grid: int) -> torch.Tensor:
+        device, dtype = params.device, params.dtype
+        cx = params[:, 0].view(-1, 1, 1).clamp(0.0, grid - 1.0)
+        cy = params[:, 1].view(-1, 1, 1).clamp(0.0, grid - 1.0)
+        rx = (F.softplus(params[:, 2]) + 0.8).view(-1, 1, 1).clamp(
+            2.0, 0.45 * grid)
+        ry = (F.softplus(params[:, 3]) + 0.8).view(-1, 1, 1).clamp(
+            2.0, 0.45 * grid)
+        angle = params[:, 4].view(-1, 1, 1)
+        yy, xx = torch.meshgrid(
+            torch.arange(grid, device=device, dtype=dtype),
+            torch.arange(grid, device=device, dtype=dtype),
+            indexing="ij")
+        x = xx[None] - cx
+        y = yy[None] - cy
+        ca, sa = torch.cos(angle), torch.sin(angle)
+        xr = ca * x + sa * y
+        yr = -sa * x + ca * y
+        return 1.0 - (xr / rx).square() - (yr / ry).square()
+
+    @staticmethod
+    def _polygon_fields(params: torch.Tensor, grid: int,
+                        sides: int) -> torch.Tensor:
+        device, dtype = params.device, params.dtype
+        cx = params[:, 0].view(-1, 1, 1).clamp(0.0, grid - 1.0)
+        cy = params[:, 1].view(-1, 1, 1).clamp(0.0, grid - 1.0)
+        radius = (F.softplus(params[:, 2]) + 1.0).view(-1, 1, 1).clamp(
+            2.0, 0.5 * grid)
+        angle = params[:, 3].view(-1, 1, 1)
+        yy, xx = torch.meshgrid(
+            torch.arange(grid, device=device, dtype=dtype),
+            torch.arange(grid, device=device, dtype=dtype),
+            indexing="ij")
+        x = xx[None] - cx
+        y = yy[None] - cy
+        ca, sa = torch.cos(angle), torch.sin(angle)
+        xr = ca * x + sa * y
+        yr = -sa * x + ca * y
+        normals = (2.0 * math.pi / sides) * torch.arange(
+            sides, device=device, dtype=dtype) + math.pi / sides
+        projection = (xr[None] * torch.cos(normals).view(-1, 1, 1, 1) +
+                      yr[None] * torch.sin(normals).view(-1, 1, 1, 1))
+        apothem = (radius * math.cos(math.pi / sides)).clamp_min(1e-3)
+        return 1.0 - projection.amax(dim=0) / apothem
+
+    def _fields(self, params: torch.Tensor, grid: int) -> torch.Tensor:
+        if self.primitive == "polygon":
+            return self._polygon_fields(params, grid, self.sides)
+        return self._ellipse_fields(params, grid)
+
+    def forward(self, grid: int) -> torch.Tensor:
+        field = self._fields(self.pos_raw, grid).amax(dim=0)
+        if self.neg_raw is not None:
+            field = field - self._fields(self.neg_raw, grid).amax(dim=0)
+        field = field.clamp(-1.0, 1.0)
+        return torch.sigmoid(self.softness * field)[None, None]
+
+
+def primitives_from_mask(mask: np.ndarray, max_positive: int = 8,
+                         max_negative: int = 4, min_area: int = 20,
+                         primitive: str = "ellipse", sides: int = 6):
+    """从像素解提取基元：连通域 → 正基元，内部孔洞 → 负基元。"""
+    binary = np.asarray(mask > 0.5, dtype=np.float32)
+
+    def params_of(component):
+        if primitive == "polygon":
+            area = max(float(component.area), 1.0)
+            radius = math.sqrt(area / (0.5 * sides *
+                                       math.sin(2.0 * math.pi / sides)))
+            return [component.centroid[1], component.centroid[0],
+                    max(radius, 1.0), 0.0]
+        return [component.centroid[1], component.centroid[0],
+                max(component.major * 0.5, 1.0),
+                max(component.minor * 0.5, 1.0),
+                component.angle]
+
+    positives = [params_of(component) for component in
+                 _components(binary, min_area=min_area,
+                             max_components=max_positive)]
+    if not positives:
+        center = (binary.shape[0] - 1) / 2.0
+        radius = max(6.0, 0.12 * binary.shape[0])
+        positives = ([[center, center, radius, radius, 0.0]]
+                     if primitive == "ellipse"
+                     else [[center, center, radius, 0.0]])
+
+    height, width = binary.shape
+    negatives = []
+    complement = (1.0 - binary).astype(np.float32)
+    for component in _components(complement, min_area=max(min_area, 6),
+                                 max_components=max_negative * 4):
+        r0, r1, c0, c1 = component.bbox
+        if r0 <= 1 or c0 <= 1 or r1 >= height - 2 or c1 >= width - 2:
+            continue  # 外部背景，不是孔
+        negatives.append(params_of(component))
+        if len(negatives) >= max_negative:
+            break
+    return positives, negatives
+
+
+def refine_geometry(observed: torch.Tensor, forward: "FrozenForward",
+                    cfg: "InversionConfig", init_mask: torch.Tensor,
+                    z: Optional[torch.Tensor],
+                    condition: Optional[torch.Tensor]):
+    """后段：把像素解拟合成平滑基元（椭圆/正多边形），再用同一前向微调。"""
+    device = observed.device
+    positives, negatives = primitives_from_mask(
+        init_mask[0, 0].detach().cpu().numpy(),
+        cfg.geom_max_positive, cfg.geom_max_negative, cfg.geom_min_area,
+        cfg.geom_primitive, cfg.geom_sides)
+    field = PrimitiveField(positives, negatives, cfg.geom_softness,
+                           cfg.geom_primitive, cfg.geom_sides).to(device)
+    optimizer = torch.optim.Adam(field.parameters(), lr=cfg.geom_lr)
+    init = init_mask.detach().float()
+    support = F.max_pool2d((init > 0.5).float(), kernel_size=11,
+                           stride=1, padding=5)
+    area_target = float(init.mean())
+    with torch.enable_grad():
+        for step in range(cfg.geom_steps):
+            aperture = field(cfg.grid)
+            if (cfg.geometry == "self-consistent" and
+                    step % cfg.geometry_every == 0):
+                _, z, condition = _update_geometry(forward, cfg, aperture, z)
+            pred = forward(aperture, z, condition)
+            data, _, _, _ = pattern_loss(pred, observed, cfg.lambda_freq,
+                                         cfg.lambda_corr)
+            outside = ((aperture * (1.0 - support)).sum() /
+                       aperture.sum().clamp_min(1e-6))
+            area = aperture.mean().clamp_min(1e-6)
+            area_term = (torch.log(area) -
+                         math.log(max(area_target, 1e-6))).square()
+            loss = (data + cfg.geom_support_weight * outside +
+                    cfg.geom_area_weight * area_term)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(field.parameters(), 1.0)
+            optimizer.step()
+    with torch.no_grad():
+        soft = field(cfg.grid).clamp(1e-6, 1.0 - 1e-6)
+        binary = (soft > 0.5).float()
+    info = {
+        "geometric_stage": True,
+        "primitive": cfg.geom_primitive,
+        "sides": cfg.geom_sides if cfg.geom_primitive == "polygon" else None,
+        "positive": len(positives),
+        "negative": len(negatives),
+        "positive_primitives": field.pos_raw.detach().cpu().tolist(),
+        "negative_primitives": (field.neg_raw.detach().cpu().tolist()
+                                if field.neg_raw is not None else []),
+    }
+    return soft, binary, info
 
 
 def _initial_mask(size: int, kind: str, rng: np.random.Generator,
@@ -936,6 +1461,11 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
 
     total_steps = max(sum(cfg.steps), 1)
     global_step = 0
+    stage_count = len(cfg.scales)
+    ema_l1: Optional[float] = None
+    ema_prior: Optional[float] = None
+    gain = 1.0
+    target_ratio = 0.0
 
     for stage, (resolution, steps, lr) in enumerate(
             zip(cfg.scales, cfg.steps, cfg.lrs)):
@@ -944,10 +1474,17 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
             field = PixelField(
                 resize_theta(field.theta.detach(), resolution),
                 smooth_sigma=cfg.smooth_sigma).to(device)
+        # 平滑尺度：粗阶段更大（先定大方向），最后一级回落到基础值。
+        # fixed 模式保持旧的固定 sigma，便于对照。
+        if cfg.loss_schedule == "phased":
+            stage_fraction = stage / max(stage_count - 1, 1)
+            sigma_scale = (cfg.sigma_coarse_scale * (1.0 - stage_fraction) +
+                           1.0 * stage_fraction)
+            field.set_sigma(max(0.2, cfg.smooth_sigma * sigma_scale))
         optimizer = torch.optim.Adam([field.theta], lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=max(steps, 1))
-        final_stage = stage == len(cfg.scales) - 1
+        final_stage = stage == stage_count - 1
         ste_start = max(0, steps - min(cfg.ste_steps, steps))
 
         for step in range(steps):
@@ -955,7 +1492,13 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
             field.temperature = (cfg.temperature_start +
                                  (cfg.temperature_end - cfg.temperature_start)
                                  * progress)
+            # 细节阶段：更小的平滑尺度 + 后续 STE，用于收紧具体形状。
+            if (cfg.loss_schedule == "phased" and final_stage and
+                    progress >= cfg.detail_fraction):
+                field.set_sigma(max(0.2, cfg.smooth_sigma *
+                                    cfg.sigma_detail_scale))
             aperture = field(cfg.grid)
+            factors = loss_factors(progress, cfg)
 
             if cfg.geometry == "self-consistent":
                 if z is None or step % cfg.geometry_every == 0:
@@ -965,6 +1508,8 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
                 z, condition = _fixed_geometry(forward, cfg, device)
 
             use_ste = final_stage and step >= ste_start
+            if cfg.loss_schedule == "phased":
+                use_ste = use_ste and progress >= cfg.detail_fraction
             if use_ste:
                 hard = (aperture > 0.5).float()
                 aperture_used = aperture + (hard - aperture).detach()
@@ -973,11 +1518,36 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
 
             pred, simulated, delta = forward(
                 aperture_used, z, condition, return_aux=True)
-            data, l1, freq = pattern_loss(pred, observed, cfg.lambda_freq)
-            prior, prior_stats = prior_loss(aperture, cfg, progress,
-                                            area_target=area_fraction)
+            data, l1, freq, corr = pattern_loss(
+                pred, observed, cfg.lambda_freq, cfg.lambda_corr)
+            if cfg.lambda_coarse > 0 and factors["coarse"] > 0:
+                coarse = coarse_pattern_loss(pred, observed, cfg.coarse_kernel)
+            else:
+                coarse = pred.new_zeros(())
+            coarse_contrib = cfg.lambda_coarse * factors["coarse"] * coarse
+
+            prior_ramped, prior_stats = prior_loss(
+                aperture, cfg, progress, area_target=area_fraction,
+                factors=factors)
+            l1_value = float(l1.detach())
+            raw_value = float(prior_stats["prior_raw"])
+            decay = float(cfg.ema_decay)
+            if ema_l1 is None:
+                ema_l1, ema_prior = l1_value, raw_value
+            else:
+                ema_l1 = decay * ema_l1 + (1.0 - decay) * l1_value
+                ema_prior = decay * ema_prior + (1.0 - decay) * raw_value
+            if cfg.loss_schedule == "phased":
+                target_ratio = cfg.prior_ratio * _ramp(
+                    progress, cfg.fit_fraction, cfg.prior_fraction)
+                gain = target_ratio * ema_l1 / max(ema_prior, 1e-8)
+                gain = float(np.clip(gain, cfg.prior_gain_min,
+                                     cfg.prior_gain_max))
+            else:
+                target_ratio, gain = 0.0, 1.0
+            prior = gain * prior_ramped
             residual = delta.abs().mean()
-            loss = data + prior + cfg.lambda_res * residual
+            loss = data + coarse_contrib + prior + cfg.lambda_res * residual
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -1001,7 +1571,18 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
                     "data": float(data.detach()),
                     "l1": float(l1.detach()),
                     "freq": float(freq.detach()),
+                    "corr": float(corr.detach()),
+                    "coarse": float(coarse.detach()),
+                    "coarse_contrib": float(coarse_contrib.detach()),
                     "prior": float(prior.detach()),
+                    "prior_raw": raw_value,
+                    "prior_ramped": float(prior_ramped.detach()),
+                    "gain": float(gain),
+                    "target_ratio": float(target_ratio),
+                    "prior_ratio": float(prior.detach()) / max(l1_value, 1e-12),
+                    "sigma": float(field.smooth_sigma),
+                    "phase": (0 if progress < cfg.fit_fraction else
+                              1 if progress < cfg.detail_fraction else 2),
                     "tv": prior_stats["tv"],
                     "lap": prior_stats["lap"],
                     "perim": prior_stats["perim"],
@@ -1010,6 +1591,10 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
                     "open5": prior_stats["open5"],
                     "island": prior_stats["island"],
                     "area": prior_stats["area"],
+                    "f_tv": prior_stats["f_tv"],
+                    "f_perim": prior_stats["f_perim"],
+                    "f_bin": prior_stats["f_bin"],
+                    "f_coarse": prior_stats["f_coarse"],
                     "residual": float(residual.detach()),
                     "z_m": float(z.detach().reshape(-1)[0]),
                     "area_fraction": float((aperture > 0.5).float().mean()),
@@ -1023,35 +1608,67 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
         aperture_soft = aperture_soft_raw
         primitive_info: Dict = {}
         primitive_components = 0
-        if cfg.primitive_fit != "none":
-            cleaned, primitive_info = clean_aperture(
+        if cfg.geometric_stage:
+            geo_soft, geo_bin, primitive_info = refine_geometry(
+                observed, forward, cfg, aperture_bin, z, condition)
+            aperture_soft, aperture_bin = geo_soft, geo_bin
+            primitive_components = int(
+                primitive_info.get("positive", 0) +
+                primitive_info.get("negative", 0))
+        else:
+            if cfg.primitive_fit != "none":
+                cleaned, primitive_info = clean_aperture(
+                    aperture_bin[0, 0].cpu().numpy(),
+                    mode=cfg.primitive_fit,
+                    min_area=cfg.primitive_min_area,
+                    max_fit_area=cfg.primitive_max_fit_area,
+                    min_solidity=cfg.primitive_min_solidity,
+                    max_components=cfg.primitive_max_components,
+                    shrink=cfg.primitive_shrink,
+                )
+                if cleaned.any():
+                    aperture_bin = torch.from_numpy(
+                        cleaned)[None, None].to(device)
+                    aperture_soft = aperture_bin
+                    primitive_components = int(
+                        primitive_info.get("components_fit", 0) +
+                        primitive_info.get("components_kept", 0))
+                else:
+                    primitive_info["fallback"] = "kept_raw_pixel_mask"
+                    primitive_components = int(
+                        primitive_info.get("components_in", 0))
+            # 去散点 + 边缘平滑：对二值 mask 做高斯平滑后再取 0.5 等值线。
+            cleaned = remove_small_components(
                 aperture_bin[0, 0].cpu().numpy(),
-                mode=cfg.primitive_fit,
-                min_area=cfg.primitive_min_area,
-                max_fit_area=cfg.primitive_max_fit_area,
-                min_solidity=cfg.primitive_min_solidity,
-                max_components=cfg.primitive_max_components,
-                shrink=cfg.primitive_shrink,
-            )
+                min_area=max(cfg.primitive_min_area, 6),
+                max_components=cfg.primitive_max_components)
             if cleaned.any():
                 aperture_bin = torch.from_numpy(cleaned)[None, None].to(device)
-                aperture_soft = aperture_bin
-                primitive_components = int(
-                    primitive_info.get("components_fit", 0) +
-                    primitive_info.get("components_kept", 0))
+            if cfg.edge_sigma > 0:
+                aperture_soft = blur_mask(aperture_bin,
+                                          cfg.edge_sigma).clamp(1e-6, 1.0 - 1e-6)
+                aperture_bin = (aperture_soft > 0.5).float()
             else:
-                primitive_info["fallback"] = "kept_raw_pixel_mask"
-                primitive_components = int(
-                    primitive_info.get("components_in", 0))
-        support, z_final, condition_final = forward.geometry_from_mask(
+                aperture_soft = aperture_bin
+        support, z_self, condition_self = forward.geometry_from_mask(
             aperture_bin, nf=cfg.nf, support_fraction=cfg.support_fraction)
+        if cfg.geometry == "self-consistent":
+            z_final, condition_final = z_self, condition_self
+        else:
+            # known / canonical 模式下优化用的是固定 z，最终评估也必须用同一个。
+            z_final, condition_final = _fixed_geometry(forward, cfg, device)
         pred_final, simulated_final, delta_final = forward(
-            aperture_bin, z_final, condition_final, return_aux=True)
-        physical_final = forward.physical_pattern(aperture_bin, z_final)
+            aperture_soft, z_final, condition_final, return_aux=True)
+        physical_final = forward.physical_pattern(aperture_soft, z_final)
         final_progress = 1.0
-        final_prior, _ = prior_loss(aperture_soft, cfg, final_progress,
-                                    area_target=float(aperture_bin.mean()))
-        final_data, _, _ = pattern_loss(pred_final, observed, cfg.lambda_freq)
+        final_prior_ramped, _ = prior_loss(
+            aperture_soft, cfg, final_progress,
+            area_target=float(aperture_bin.mean()))
+        final_prior = float(gain) * float(final_prior_ramped.detach())
+        final_data, _, _, _ = pattern_loss(
+            pred_final, observed, cfg.lambda_freq, cfg.lambda_corr)
+        final_coarse = float(coarse_pattern_loss(pred_final, observed,
+                                                 cfg.coarse_kernel))
         pattern_mae = float((pred_final - observed).abs().mean())
         physical_mae = float((physical_final - observed).abs().mean())
         residual_ratio = float(
@@ -1088,6 +1705,8 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
         runtime_s=time.perf_counter() - started,
         primitive_components=primitive_components,
         primitive_info=primitive_info,
+        loss_gain=float(gain),
+        coarse_loss=final_coarse,
     )
 
 
@@ -1221,14 +1840,33 @@ def plot_loss(history: List[Dict], path: Path, title: str):
     if not history:
         return
     steps = [row["step"] for row in history]
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig, (ax, ax_weight) = plt.subplots(
+        2, 1, figsize=(7.2, 6.0), sharex=True,
+        gridspec_kw={"height_ratios": (3.0, 2.0)})
     for key, label in (("loss", "total"), ("data", "data"),
-                       ("prior", "prior")):
+                       ("prior", "prior"), ("coarse_contrib", "coarse")):
         values = [max(float(row.get(key, 0.0)), 1e-12) for row in history]
-        ax.semilogy(steps, values, label=label, lw=1.4)
-    ax.set(xlabel="step", ylabel="loss (floor 1e-12)", title=title)
+        ax.semilogy(steps, values, label=label, lw=1.3)
+    ax.set_ylabel("loss (floor 1e-12)")
     ax.grid(alpha=0.25)
-    ax.legend(fontsize=9)
+    ax.legend(fontsize=8, ncol=2)
+
+    target = [float(row.get("target_ratio", 0.0)) for row in history]
+    actual = [float(row.get("prior_ratio", 0.0)) for row in history]
+    ax_weight.plot(steps, target, "k--", lw=1.2, label="target prior / L1")
+    ax_weight.plot(steps, actual, color="C3", lw=1.4,
+                   label="actual prior / L1")
+    ax_weight.set(xlabel="step", ylabel="prior / L1")
+    ax_weight.grid(alpha=0.25)
+    twin = ax_weight.twinx()
+    twin.plot(steps, [float(row.get("gain", 1.0)) for row in history],
+              color="C2", lw=1.0, alpha=0.7, label="adaptive gain")
+    twin.set_ylabel("gain")
+    handles, labels = ax_weight.get_legend_handles_labels()
+    handles2, labels2 = twin.get_legend_handles_labels()
+    ax_weight.legend(handles + handles2, labels + labels2, fontsize=8,
+                     loc="upper left")
+    fig.suptitle(title, fontsize=11)
     fig.tight_layout()
     fig.savefig(path, dpi=140)
     plt.close(fig)
@@ -1247,7 +1885,7 @@ def plot_candidates(observed: np.ndarray, candidates: List[Candidate],
             (observed, "inferno"),
             (candidate.pattern_pred, "inferno"),
             (candidate.pattern_physical, "inferno"),
-            (candidate.aperture_bin, "gray"),
+            (candidate.aperture_soft, "gray"),
         ]
         for col, (image, cmap) in enumerate(panels):
             ax = axes[row, col]
@@ -1286,13 +1924,63 @@ def plot_residual(candidate: Candidate, observed: np.ndarray, path: Path):
     plt.close(fig)
 
 
+def plot_expected_vs_top1(observed: np.ndarray, reference_mask: np.ndarray,
+                          reference_pattern: np.ndarray,
+                          candidate: Candidate, reference_info: Dict,
+                          path: Path):
+    """预期效果 vs 实际 top1；reference 只用于画图和诊断。"""
+    top_mask = candidate.aperture_bin
+    top_display = candidate.aperture_soft
+    top_pattern = candidate.pattern_pred
+    overlay = np.zeros(reference_mask.shape + (3,), dtype=np.float32)
+    overlay[..., 0] = reference_mask
+    overlay[..., 1] = top_mask
+    difference = np.abs(reference_mask - top_mask)
+    residual = top_pattern - observed
+    limit = max(float(np.abs(residual).max()), 1e-6)
+
+    fig, axes = plt.subplots(2, 4, figsize=(15.0, 7.6))
+    panels = [
+        (axes[0, 0], reference_mask, "gray", "Expected aperture (reference)"),
+        (axes[0, 1], top_display, "gray", "Top1 aperture (reconstruction)"),
+        (axes[0, 2], overlay, None,
+         "Overlay: red=expected, green=top1, yellow=both"),
+        (axes[0, 3], difference, "magma", "|expected - top1|"),
+        (axes[1, 0], reference_pattern, "inferno",
+         "Expected pattern (reference forward)"),
+        (axes[1, 1], observed, "inferno", "Observed pattern (input)"),
+        (axes[1, 2], top_pattern, "inferno", "Top1 reconstructed pattern"),
+        (axes[1, 3], residual, "RdBu_r", "Residual (top1 - observed)"),
+    ]
+    for ax, image, cmap, label in panels:
+        if cmap is None:
+            ax.imshow(np.clip(image, 0.0, 1.0))
+        elif cmap == "RdBu_r":
+            ax.imshow(image, cmap=cmap, vmin=-limit, vmax=limit)
+        else:
+            ax.imshow(image, cmap=cmap, vmin=0.0, vmax=1.0)
+        ax.set_title(label, fontsize=9)
+        ax.axis("off")
+    note = (f"IoU={reference_info['iou_top1']:.3f}   "
+            f"reference pattern MAE={reference_info['pattern_mae']:.2e}   "
+            f"top1 MAE={candidate.pattern_mae:.2e}   "
+            f"area reference={reference_info['area_fraction']:.3f} / "
+            f"top1={candidate.area_fraction:.3f}")
+    fig.suptitle("Expected vs top1 — reference used for comparison only, "
+                 "never in loss / gradients / optimisation\n" + note,
+                 fontsize=11)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.savefig(path, dpi=130)
+    plt.close(fig)
+
+
 def save_candidate(folder: Path, candidate: Candidate, observed: np.ndarray):
     prefix = f"rank{candidate.rank}"
     np.save(folder / f"{prefix}_aperture.npy", candidate.aperture_soft)
     np.save(folder / f"{prefix}_aperture_bin.npy", candidate.aperture_bin)
     np.save(folder / f"{prefix}_pattern_pred.npy", candidate.pattern_pred)
     np.save(folder / f"{prefix}_pattern_physical.npy", candidate.pattern_physical)
-    save_image(folder / f"{prefix}_aperture.png", candidate.aperture_bin,
+    save_image(folder / f"{prefix}_aperture.png", candidate.aperture_soft,
                "gray", 0.0, 1.0)
     save_image(folder / f"{prefix}_pattern_pred.png", candidate.pattern_pred,
                "inferno", 0.0, 1.0)
@@ -1309,11 +1997,44 @@ def save_candidate(folder: Path, candidate: Candidate, observed: np.ndarray):
 # ============================================================
 def run_one(observed: torch.Tensor, forward: FrozenForward,
             cfg: InversionConfig, out: Path,
-            sample_info: Optional[Dict] = None) -> Dict:
+            sample_info: Optional[Dict] = None,
+            reference: Optional[Dict] = None) -> Dict:
     out.mkdir(parents=True, exist_ok=True)
     started = time.perf_counter()
     top, all_candidates = invert(observed, forward, cfg)
     observed_np = observed[0, 0].detach().cpu().numpy()
+
+    # 参考光阑只在反演完成后用于作图/诊断，绝不进入优化。
+    reference_info: Optional[Dict] = None
+    reference_mask_np: Optional[np.ndarray] = None
+    reference_pattern_np: Optional[np.ndarray] = None
+    if reference is not None and top:
+        with torch.no_grad():
+            mask = reference["mask"].to(forward.device)
+            support_ref, z_ref_self, cond_ref_self = forward.geometry_from_mask(
+                mask, nf=cfg.nf, support_fraction=cfg.support_fraction)
+            if cfg.geometry == "self-consistent":
+                z_ref, condition_ref = z_ref_self, cond_ref_self
+            else:
+                # 与 top1 的最终评估保持同一套 z 规则。
+                z_ref, condition_ref = _fixed_geometry(forward, cfg,
+                                                       forward.device)
+            pattern_ref = forward(mask, z_ref, condition_ref)[0, 0]
+            reference_mask_np = mask[0, 0].cpu().numpy()
+            reference_pattern_np = pattern_ref.cpu().numpy()
+            pattern_mae_ref = float((pattern_ref - observed).abs().mean())
+            iou_ref = centroid_iou(reference_mask_np, top[0].aperture_bin)
+            area_ref = float(mask.mean())
+            z_ref_value = float(z_ref.reshape(-1)[0])
+        reference_info = {
+            "source": reference.get("source"),
+            "note": "仅用于对比与诊断，不参与 loss、梯度或任何优化步骤",
+            "pattern_mae": pattern_mae_ref,
+            "iou_top1": iou_ref,
+            "area_fraction": area_ref,
+            "z_m": z_ref_value,
+            "figure": "expected_vs_top1.png",
+        }
 
     warnings: List[str] = []
     for candidate in top:
@@ -1354,13 +2075,33 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
         "mode": forward.mode,
         "geometry": cfg.geometry,
         "residual_weight": forward.residual_weight,
+        "reference": reference_info,
         "config": {
             "scales": list(cfg.scales),
             "steps": list(cfg.steps),
             "lrs": list(cfg.lrs),
             "restarts": cfg.restarts,
             "top_k": cfg.top_k,
+            "loss_schedule": cfg.loss_schedule,
+            "fit_fraction": cfg.fit_fraction,
+            "prior_fraction": cfg.prior_fraction,
+            "detail_fraction": cfg.detail_fraction,
+            "prior_ratio": cfg.prior_ratio,
+            "lambda_coarse": cfg.lambda_coarse,
+            "coarse_kernel": cfg.coarse_kernel,
+            "sigma_coarse_scale": cfg.sigma_coarse_scale,
+            "sigma_detail_scale": cfg.sigma_detail_scale,
+            "edge_sigma": cfg.edge_sigma,
+            "geometric_stage": cfg.geometric_stage,
+            "geom_steps": cfg.geom_steps,
+            "geom_primitive": cfg.geom_primitive,
+            "geom_sides": cfg.geom_sides,
+            "geom_lr": cfg.geom_lr,
+            "geom_max_positive": cfg.geom_max_positive,
+            "geom_max_negative": cfg.geom_max_negative,
+            "temperature_end": cfg.temperature_end,
             "lambda_freq": cfg.lambda_freq,
+            "lambda_corr": cfg.lambda_corr,
             "lambda_tv": cfg.lambda_tv,
             "lambda_lap": cfg.lambda_lap,
             "lambda_perim": cfg.lambda_perim,
@@ -1397,6 +2138,13 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
         "inversion_config": asdict(cfg),
     })
     plot_candidates(observed_np, top, out / "comparison.png")
+    if reference_info is not None:
+        plot_expected_vs_top1(observed_np, reference_mask_np,
+                              reference_pattern_np, top[0],
+                              reference_info, out / "expected_vs_top1.png")
+        np.save(out / "expected_aperture_bin.npy", reference_mask_np)
+        np.save(out / "expected_pattern_pred.npy", reference_pattern_np)
+        write_json(out / "reference.json", reference_info)
     for candidate in top:
         save_candidate(out, candidate, observed_np)
     return result
@@ -1409,8 +2157,17 @@ def _parse_args():
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--pattern", required=True,
-                        help="单张图样 .npy/.png")
+    parser.add_argument("--pattern", default=None,
+                        help="单张衍射图样 .npy/.png（网络唯一输入）")
+    parser.add_argument("--write-cases", default=None, metavar="DIR",
+                        help="只生成测试用例（pattern/gt/meta）后退出，不做反演")
+    parser.add_argument("--case-shapes", nargs="+", default=list(CASE_BUILDERS),
+                        choices=list(CASE_BUILDERS),
+                        help="--write-cases 时要生成的用例")
+    parser.add_argument("--case-scale", type=float, default=0.5,
+                        help="--write-cases 时光阑相对画幅的缩放")
+    parser.add_argument("--case-grid", type=int, default=256,
+                        help="--write-cases 时的网格大小")
     parser.add_argument("--checkpoint", help="直接指定 physics best_model.pt")
     parser.add_argument("--run", help="train.py 输出目录，如 runs/v1")
     parser.add_argument("--nf", type=float, default=None,
@@ -1425,8 +2182,8 @@ def _parse_args():
                         help="checkpoint 模式下残差项权重，0 表示只用传播层")
     parser.add_argument("--geometry",
                         choices=("self-consistent", "canonical", "known"),
-                        default="self-consistent",
-                        help="z 的来源；默认由当前光阑支撑和 NF 自洽计算")
+                        default=None,
+                        help="z 的来源；默认按图样自洽。光阑仿真模式默认固定合成时的 z")
     parser.add_argument("--z", type=float, default=None,
                         help="已知传播距离（米）；配合 --geometry known")
     parser.add_argument("--support-fraction", type=float, default=0.5,
@@ -1440,11 +2197,58 @@ def _parse_args():
     parser.add_argument("--restarts", type=int, default=4)
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--scales", type=int, nargs="+", default=(64, 128, 256))
-    parser.add_argument("--steps", type=int, nargs="+", default=(120, 120, 200))
+    parser.add_argument("--steps", type=int, nargs="+", default=(240, 240, 480))
     parser.add_argument("--lrs", type=float, nargs="+", default=(0.05, 0.02, 0.01))
-    parser.add_argument("--lambda-freq", type=float, default=0.1)
+    parser.add_argument("--loss-schedule", choices=("phased", "fixed"),
+                        default="phased",
+                        help="phased: 前期只拟合数据、后期收形状；fixed: 旧固定权重")
+    parser.add_argument("--fit-fraction", type=float, default=0.30,
+                        help="该进度之前只用数据项拟合大方向")
+    parser.add_argument("--prior-fraction", type=float, default=0.60,
+                        help="该进度时平滑/面积/连通性先验到满权重")
+    parser.add_argument("--detail-fraction", type=float, default=0.85,
+                        help="该进度时二值/形态学先验到满权重")
+    parser.add_argument("--prior-ratio", type=float, default=0.25,
+                        help="先验总权重相对空间 L1 的目标占比")
+    parser.add_argument("--lambda-coarse", type=float, default=0.25,
+                        help="前期低频大方向数据项权重")
+    parser.add_argument("--coarse-kernel", type=int, default=9,
+                        help="低频数据项的平均池化核，>=3 且为奇数")
+    parser.add_argument("--sigma-coarse-scale", type=float, default=1.6,
+                        help="粗阶段平滑尺度相对 --smooth-sigma 的倍数")
+    parser.add_argument("--sigma-detail-scale", type=float, default=1.0,
+                        help="细节阶段平滑尺度相对 --smooth-sigma 的倍数")
+    parser.add_argument("--edge-sigma", type=float, default=1.5,
+                        help="结束后对光阑做边缘平滑的 sigma（像素），0=关闭")
+    parser.add_argument("--geometric-stage", choices=("on", "off"),
+                        default="on",
+                        help="后段是否把像素解拟合成平滑椭圆基元")
+    parser.add_argument("--geom-primitive", choices=("ellipse", "polygon"),
+                        default="ellipse",
+                        help="几何基元形状；polygon 为正多边形")
+    parser.add_argument("--geom-sides", type=int, default=6,
+                        help="polygon 模式的边数（>=3）")
+    parser.add_argument("--geom-steps", type=int, default=300,
+                        help="几何参数化阶段的迭代步数")
+    parser.add_argument("--geom-lr", type=float, default=0.02,
+                        help="几何基元参数的 Adam 学习率")
+    parser.add_argument("--geom-max-pos", type=int, default=8,
+                        help="最多正椭圆基元数")
+    parser.add_argument("--geom-max-neg", type=int, default=4,
+                        help="最多孔洞（负椭圆）数")
+    parser.add_argument("--geom-softness", type=float, default=25.0,
+                        help="椭圆边界 sigmoid 软硬，越大越接近二值")
+    parser.add_argument("--expected", default=None,
+                        help="预期光阑 .npy/.png；只在结束后作图对比，不参与优化")
+    parser.add_argument("--expected-sample", type=int, default=None,
+                        help="从 --dataset 的 apertures.npy 取第 N 个样本作为预期光阑")
+    parser.add_argument("--dataset", default=None,
+                        help="数据目录（配合 --expected-sample），如 data/v1")
+    parser.add_argument("--lambda-freq", type=float, default=0.02)
+    parser.add_argument("--lambda-corr", type=float, default=0.5,
+                        help="相关系数项权重；尺度不变，抑制空光阑/大光斑平凡解")
     parser.add_argument("--lambda-tv", type=float, default=1e-3)
-    parser.add_argument("--lambda-lap", type=float, default=1e-3,
+    parser.add_argument("--lambda-lap", type=float, default=3e-3,
                         help="边界曲率/锯齿惩罚")
     parser.add_argument("--lambda-perim", type=float, default=1e-3,
                         help="周长/面积比惩罚")
@@ -1463,15 +2267,17 @@ def _parse_args():
     parser.add_argument("--smooth-sigma", type=float, default=1.0,
                         help="水平集高斯平滑，限制边界曲率/最小特征尺寸")
     parser.add_argument("--primitive-fit", choices=("none", "ellipse", "rect"),
-                        default="ellipse",
-                        help="把连通域拟合成椭圆/矩形，去掉小岛并平滑边界")
+                        default="none",
+                        help="把连通域拟合成椭圆/矩形；默认关闭，避免抹掉孔洞/细结构")
     parser.add_argument("--primitive-min-area", type=int, default=20)
     parser.add_argument("--primitive-max-fit-area", type=int, default=4000)
     parser.add_argument("--primitive-min-solidity", type=float, default=0.2)
     parser.add_argument("--primitive-max-components", type=int, default=32)
     parser.add_argument("--primitive-shrink", type=float, default=1.0)
     parser.add_argument("--geometry-every", type=int, default=10)
-    parser.add_argument("--ste-steps", type=int, default=80)
+    parser.add_argument("--temperature-end", type=float, default=0.35,
+                        help="结束时 sigmoid 温度；越大边缘越软")
+    parser.add_argument("--ste-steps", type=int, default=160)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--cpu-threads", type=int, default=4)
@@ -1480,18 +2286,29 @@ def _parse_args():
 
 def main():
     args = _parse_args()
+    if args.write_cases:
+        nf = float(args.nf if args.nf is not None else 1.0)
+        write_cases(args.write_cases, args.case_shapes, nf,
+                    args.case_grid, args.case_scale)
+        return
+    if not args.pattern:
+        raise SystemExit("必须提供 --pattern（或用 --write-cases 只生成用例）")
     if args.restarts < 1 or args.top_k < 1:
         raise SystemExit("--restarts 与 --top-k 必须为正")
     if args.top_k > args.restarts:
         args.top_k = args.restarts
     if args.forward_mode == "physical" and args.residual_weight != 1.0:
         raise SystemExit("--forward-mode physical 时 --residual-weight 无效")
-    if args.geometry == "known" and args.z is None:
-        raise SystemExit("--geometry known 需要 --z（米）")
     if not args.checkpoint and not args.run:
         raise SystemExit("必须提供 --checkpoint 或 --run")
     if args.run and args.nf is None:
         raise SystemExit("用 --run 查找 checkpoint 时必须提供 --nf")
+    if args.geometry == "known" and args.z is None:
+        raise SystemExit("--geometry known 需要 --z（米）")
+    if args.expected and args.expected_sample is not None:
+        raise SystemExit("--expected 与 --expected-sample 只能选一个")
+    if args.expected_sample is not None and not args.dataset:
+        raise SystemExit("--expected-sample 需要 --dataset（如 data/v1）")
 
     torch.set_num_threads(args.cpu_threads)
     device = choose_device(args.device)
@@ -1511,6 +2328,7 @@ def main():
             f"--nf={args.nf} 与 checkpoint 的 NF={forward.nf} 不一致")
     nf = float(forward.nf if args.nf is None else args.nf)
     grid = forward.config.grid
+    geometry = args.geometry or "self-consistent"
 
     cfg = InversionConfig(
         nf=nf,
@@ -1520,12 +2338,32 @@ def main():
         lrs=tuple(args.lrs),
         restarts=args.restarts,
         top_k=args.top_k,
-        geometry=args.geometry,
+        geometry=geometry,
         support_fraction=args.support_fraction,
         z_m=args.z,
         geometry_every=args.geometry_every,
         ste_steps=args.ste_steps,
+        temperature_end=args.temperature_end,
+        loss_schedule=args.loss_schedule,
+        fit_fraction=args.fit_fraction,
+        prior_fraction=args.prior_fraction,
+        detail_fraction=args.detail_fraction,
+        prior_ratio=args.prior_ratio,
+        lambda_coarse=args.lambda_coarse,
+        coarse_kernel=args.coarse_kernel,
+        sigma_coarse_scale=args.sigma_coarse_scale,
+        sigma_detail_scale=args.sigma_detail_scale,
+        edge_sigma=args.edge_sigma,
+        geometric_stage=(args.geometric_stage == "on"),
+        geom_max_positive=args.geom_max_pos,
+        geom_max_negative=args.geom_max_neg,
+        geom_steps=args.geom_steps,
+        geom_primitive=args.geom_primitive,
+        geom_sides=args.geom_sides,
+        geom_lr=args.geom_lr,
+        geom_softness=args.geom_softness,
         lambda_freq=args.lambda_freq,
+        lambda_corr=args.lambda_corr,
         lambda_tv=args.lambda_tv,
         lambda_lap=args.lambda_lap,
         lambda_perim=args.lambda_perim,
@@ -1552,14 +2390,31 @@ def main():
     print(f"设备：{device}")
     print(f"checkpoint：{checkpoint}")
     print(f"NF={nf:g}  grid={grid}  mode={args.forward_mode}  "
-          f"geometry={args.geometry}")
+          f"geometry={geometry}")
 
     observed = load_pattern(args.pattern, grid=grid,
                             input_mode=args.input_mode,
                             invert=args.invert_image).to(device)
-    run_one(observed, forward, cfg, out,
-            sample_info={"pattern": str(Path(args.pattern).resolve()),
-                         "nf": nf})
+    sample_info = {"pattern": str(Path(args.pattern).resolve()), "nf": nf}
+    reference = None
+    if args.expected_sample is not None:
+        reference = {
+            "mask": load_reference_sample(args.dataset,
+                                          args.expected_sample, grid),
+            "source": {"dataset": str(Path(args.dataset).resolve()),
+                       "index": int(args.expected_sample)},
+        }
+    elif args.expected:
+        reference = {
+            "mask": load_reference_aperture(args.expected, grid),
+            "source": str(Path(args.expected).resolve()),
+        }
+    if reference is not None:
+        print("配对光阑只用于 expected_vs_top1.png 与诊断，"
+              "不进入 loss、梯度或任何网络输入")
+
+    run_one(observed, forward, cfg, out, sample_info=sample_info,
+            reference=reference)
     print(f"完成：{out}")
 
 
