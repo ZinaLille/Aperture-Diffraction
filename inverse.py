@@ -5,16 +5,20 @@
     - train.ForwardModel / FFT / ASM 层
 
 文件内部按顺序分为四块：
-    1. 正向算子：checkpoint、FrozenForward、自洽 z、图样读写
+    1. 正向算子：checkpoint、FrozenForward、自动 z、图样读写
     2. 几何后处理：连通域清理、椭圆/矩形拟合
     3. 反演核心：配置、物理先验、PixelField、多尺度/多起点、top-3
     4. 输出与 CLI：画图、保存、单图推理入口
 
-用法：
+z 不需要用户输入：
+    --geometry auto（默认）用重建光阑的显著连通域支撑自动估计 z，
+    只在优化前 60% 更新，之后冻结；--geometry canonical 只是固定参考
+    支撑的受控对照，同样不需要 --z。
+
+用法（不需要 --z）：
     python inverse.py \
         --checkpoint runs/v1/nf_1/physics/best_model.pt \
         --pattern path/to/pattern.npy \
-        --nf 1 \
         --out inverse_runs/case_nf1
 
     离线生成测试用例（只写 pattern/gt，不反演）：
@@ -210,17 +214,73 @@ class FrozenForward(torch.nn.Module):
         span = torch.maximum(span_row, span_col).squeeze(1)
         return span * float(pitch)
 
+    @staticmethod
+    def _robust_support_width_np(binary: np.ndarray, pitch: float,
+                                 min_fraction: float = 0.02,
+                                 min_area: int = 8) -> float:
+        """由显著连通域的联合包围盒估计 D（米）。
+
+        与整张 mask 的包围盒不同，这里会忽略面积小于
+        max(min_area, min_fraction * 总面积) 的碎片，避免反演后期
+        一个几十像素的伪影把 D（以及 z）整体拖飞。
+        """
+        binary = np.asarray(binary, dtype=bool)
+        total = int(binary.sum())
+        if total == 0:
+            return 0.0
+        height, width = binary.shape
+        seen = np.zeros((height, width), dtype=bool)
+        components = []
+        for row, col in np.argwhere(binary):
+            row, col = int(row), int(col)
+            if seen[row, col]:
+                continue
+            stack = [(row, col)]
+            seen[row, col] = True
+            pixels = []
+            while stack:
+                r, c = stack.pop()
+                pixels.append((r, c))
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    rr, cc = r + dr, c + dc
+                    if (0 <= rr < height and 0 <= cc < width and
+                            binary[rr, cc] and not seen[rr, cc]):
+                        seen[rr, cc] = True
+                        stack.append((rr, cc))
+            components.append(pixels)
+        threshold = max(float(min_area), float(min_fraction) * total)
+        kept = [pixels for pixels in components if len(pixels) >= threshold]
+        if not kept:
+            kept = components
+        rows = [r for pixels in kept for r, _ in pixels]
+        cols = [c for pixels in kept for _, c in pixels]
+        span = max(max(rows) - min(rows) + 1, max(cols) - min(cols) + 1)
+        return float(span) * float(pitch)
+
     def geometry_from_mask(self, mask: torch.Tensor,
                            nf: Optional[float] = None,
-                           support_fraction: float = 0.5):
-        """由当前 mask 自洽计算 D、z、condition。
+                           support_fraction: float = 0.5,
+                           support_min_fraction: float = 0.02,
+                           support_min_area: int = 8):
+        """由当前 mask 自洽计算 D、z、condition；不需要用户提供 z。
 
-        mask 应该是 detach 后的二值/近似二值张量；梯度不通过支撑宽度回传。
+        D 取显著连通域的联合包围盒跨度，忽略小碎片。mask 应该是
+        detach 后的二值/近似二值张量；梯度不通过支撑宽度回传。
         """
         nf = float(self.nf if nf is None else nf)
         if nf <= 0:
             raise ValueError("NF 必须为正")
-        support = self.support_width_batch(mask, self.config.input_pitch_m)
+        if mask.ndim != 4 or mask.shape[1] != 1:
+            raise ValueError("mask 必须是 [B,1,H,W]")
+        supports = []
+        for index in range(mask.shape[0]):
+            binary = mask[index, 0].detach().cpu().numpy() > 0.5
+            supports.append(self._robust_support_width_np(
+                binary, self.config.input_pitch_m,
+                min_fraction=support_min_fraction,
+                min_area=support_min_area))
+        support = torch.tensor(supports, dtype=torch.float64,
+                               device=self.device)
         fallback = (float(support_fraction) * self.config.grid *
                     self.config.input_pitch_m)
         support = torch.where(
@@ -672,10 +732,15 @@ class InversionConfig:
     lrs: Tuple[float, ...] = (0.05, 0.02, 0.01)
     restarts: int = 4
     top_k: int = 3
-    geometry: str = "self-consistent"   # self-consistent | canonical | known
-    support_fraction: float = 0.5
-    z_m: Optional[float] = None
+    # auto: z 由重建光阑的显著连通域支撑自动估计，不需要用户输入。
+    # canonical: 用固定参考支撑，仅作为受控对照；同样不需要 z。
+    geometry: str = "auto"               # auto | canonical
+    support_fraction: float = 0.5        # canonical/空 mask 的参考支撑占画幅比例
     geometry_every: int = 10
+    support_min_fraction: float = 0.02   # 支撑估计忽略小于总面积 2% 的碎片
+    support_min_area: int = 8            # 支撑估计忽略小于 8 px 的碎片
+    z_freeze_fraction: float = 0.60      # 进度超过该值后冻结 z，避免后期伪影拖飞
+    z_ema_decay: float = 0.70            # log(z) 的 EMA 系数
 
     temperature_start: float = 1.0
     temperature_end: float = 0.35
@@ -697,9 +762,12 @@ class InversionConfig:
     edge_sigma: float = 1.5              # 结束后的边缘平滑（像素），0=关闭
 
     # 后段几何参数化：椭圆/正多边形基元并集 − 孔洞，参数少、边界天然平滑。
+    # auto: 对 ellipse 和 polygon 3/4/5/6 各拟合一次，按数据误差 + 复杂度选择。
     geometric_stage: bool = True
-    geom_primitive: str = "ellipse"      # ellipse | polygon
-    geom_sides: int = 6                  # polygon 模式的边数
+    geom_primitive: str = "auto"         # auto | ellipse | polygon
+    geom_sides: int = 6                  # 显式 polygon 模式的边数
+    geom_auto_sides: Tuple[int, ...] = (3, 4, 5, 6)
+    geom_auto_complexity: float = 1e-4   # auto 模式每多一条边的复杂度惩罚
     geom_max_positive: int = 8
     geom_max_negative: int = 4
     geom_steps: int = 300
@@ -708,6 +776,7 @@ class InversionConfig:
     geom_min_area: int = 20
     geom_support_weight: float = 0.01
     geom_area_weight: float = 0.005
+    geom_pixel_weight: float = 0.10   # 几何解不要离像素解太远，避免翻转/平移
 
     lambda_freq: float = 0.02
     lambda_corr: float = 0.5
@@ -745,14 +814,20 @@ class InversionConfig:
             raise ValueError("NF 必须为正")
         if self.restarts < 1 or self.top_k < 1:
             raise ValueError("restarts/top_k 必须为正")
-        if self.geometry not in ("self-consistent", "canonical", "known"):
-            raise ValueError("未知 geometry 模式")
-        if self.geometry == "known" and self.z_m is None:
-            raise ValueError("known 模式需要 z_m")
+        if self.geometry not in ("auto", "canonical"):
+            raise ValueError("geometry 必须是 auto 或 canonical")
         if self.support_fraction <= 0 or self.support_fraction > 1:
             raise ValueError("support_fraction 必须在 (0,1] 内")
         if self.geometry_every < 1:
             raise ValueError("geometry_every 必须 >=1")
+        if not 0.0 <= self.support_min_fraction < 1.0:
+            raise ValueError("support_min_fraction 必须在 [0,1) 内")
+        if self.support_min_area < 0:
+            raise ValueError("support_min_area 不能为负")
+        if not 0.0 <= self.z_freeze_fraction <= 1.0:
+            raise ValueError("z_freeze_fraction 必须在 [0,1] 内")
+        if not 0.0 <= self.z_ema_decay < 1.0:
+            raise ValueError("z_ema_decay 必须在 [0,1) 内")
         if self.smooth_sigma < 0:
             raise ValueError("smooth_sigma 不能为负")
         if min(self.lambda_tv, self.lambda_lap, self.lambda_perim,
@@ -792,12 +867,17 @@ class InversionConfig:
             raise ValueError("geom 基元数量不合法")
         if self.geom_min_area < 1:
             raise ValueError("geom_min_area 必须 >=1")
-        if self.geom_support_weight < 0 or self.geom_area_weight < 0:
+        if (self.geom_support_weight < 0 or self.geom_area_weight < 0 or
+                self.geom_pixel_weight < 0):
             raise ValueError("geom 正则权重不能为负")
-        if self.geom_primitive not in ("ellipse", "polygon"):
-            raise ValueError("geom_primitive 必须是 ellipse 或 polygon")
+        if self.geom_primitive not in ("auto", "ellipse", "polygon"):
+            raise ValueError("geom_primitive 必须是 auto/ellipse/polygon")
         if self.geom_sides < 3:
             raise ValueError("geom_sides 必须 >=3")
+        if any(int(sides) < 3 for sides in self.geom_auto_sides):
+            raise ValueError("geom_auto_sides 中的边数必须 >=3")
+        if self.geom_auto_complexity < 0:
+            raise ValueError("geom_auto_complexity 不能为负")
         if self.primitive_fit not in ("none", "ellipse", "rect"):
             raise ValueError("primitive_fit 必须是 none/ellipse/rect")
 
@@ -1224,6 +1304,50 @@ class PrimitiveField(torch.nn.Module):
         return torch.sigmoid(self.softness * field)[None, None]
 
 
+def _regular_polygon_mask(shape: Tuple[int, int], cx: float, cy: float,
+                          radius: float, angle: float,
+                          sides: int) -> np.ndarray:
+    """渲染一个正 N 边形 mask，用于初始化方向选择。"""
+    yy, xx = np.mgrid[:shape[0], :shape[1]]
+    x, y = xx - cx, yy - cy
+    ca, sa = math.cos(angle), math.sin(angle)
+    xr = ca * x + sa * y
+    yr = -sa * x + ca * y
+    normals = ((2.0 * math.pi / sides) * np.arange(sides) +
+               math.pi / sides)
+    projection = (xr[..., None] * np.cos(normals) +
+                  yr[..., None] * np.sin(normals))
+    apothem = max(radius * math.cos(math.pi / sides), 1e-3)
+    return projection.max(axis=-1) <= apothem
+
+
+def _polygon_angle_for_component(component, radius: float, sides: int,
+                                 shape: Tuple[int, int]) -> float:
+    """在对称等价的若干个方向里，选与连通域最重合的 polygon 角度。
+
+    PCA 的 component.angle 只定义到 pi，且与 polygon 法线约定的偏移
+    会随像素化/形状变化；直接加 pi/sides 可能把正三角形初始化成倒三角形。
+    这里实际渲染候选方向并取 IoU 最大者。
+    """
+    component_mask = np.zeros(shape, dtype=bool)
+    component_mask[component.rows.astype(int),
+                   component.cols.astype(int)] = True
+    best_iou, best_angle = -1.0, component.angle
+    period = 2.0 * math.pi / sides
+    for offset in (0.0, math.pi / sides):
+        for index in range(sides):
+            angle = component.angle + offset + index * period
+            candidate = _regular_polygon_mask(
+                shape, component.centroid[1], component.centroid[0],
+                radius, angle, sides)
+            intersection = np.logical_and(candidate, component_mask).sum()
+            union = np.logical_or(candidate, component_mask).sum()
+            iou = float(intersection) / max(float(union), 1.0)
+            if iou > best_iou:
+                best_iou, best_angle = iou, angle
+    return best_angle
+
+
 def primitives_from_mask(mask: np.ndarray, max_positive: int = 8,
                          max_negative: int = 4, min_area: int = 20,
                          primitive: str = "ellipse", sides: int = 6):
@@ -1235,8 +1359,10 @@ def primitives_from_mask(mask: np.ndarray, max_positive: int = 8,
             area = max(float(component.area), 1.0)
             radius = math.sqrt(area / (0.5 * sides *
                                        math.sin(2.0 * math.pi / sides)))
+            angle = _polygon_angle_for_component(
+                component, max(radius, 1.0), sides, binary.shape)
             return [component.centroid[1], component.centroid[0],
-                    max(radius, 1.0), 0.0]
+                    max(radius, 1.0), angle]
         return [component.centroid[1], component.centroid[0],
                 max(component.major * 0.5, 1.0),
                 max(component.minor * 0.5, 1.0),
@@ -1266,29 +1392,26 @@ def primitives_from_mask(mask: np.ndarray, max_positive: int = 8,
     return positives, negatives
 
 
-def refine_geometry(observed: torch.Tensor, forward: "FrozenForward",
-                    cfg: "InversionConfig", init_mask: torch.Tensor,
-                    z: Optional[torch.Tensor],
-                    condition: Optional[torch.Tensor]):
-    """后段：把像素解拟合成平滑基元（椭圆/正多边形），再用同一前向微调。"""
+def _refine_geometry_one(observed: torch.Tensor, forward: "FrozenForward",
+                         cfg: "InversionConfig", init_mask: torch.Tensor,
+                         z: torch.Tensor, condition: torch.Tensor,
+                         primitive: str, sides: int):
+    """把像素解拟合成一种基元（椭圆或正 N 边形）并用同一前向微调。"""
     device = observed.device
     positives, negatives = primitives_from_mask(
         init_mask[0, 0].detach().cpu().numpy(),
         cfg.geom_max_positive, cfg.geom_max_negative, cfg.geom_min_area,
-        cfg.geom_primitive, cfg.geom_sides)
+        primitive, sides)
     field = PrimitiveField(positives, negatives, cfg.geom_softness,
-                           cfg.geom_primitive, cfg.geom_sides).to(device)
+                           primitive, sides).to(device)
     optimizer = torch.optim.Adam(field.parameters(), lr=cfg.geom_lr)
     init = init_mask.detach().float()
     support = F.max_pool2d((init > 0.5).float(), kernel_size=11,
                            stride=1, padding=5)
     area_target = float(init.mean())
     with torch.enable_grad():
-        for step in range(cfg.geom_steps):
+        for _ in range(cfg.geom_steps):
             aperture = field(cfg.grid)
-            if (cfg.geometry == "self-consistent" and
-                    step % cfg.geometry_every == 0):
-                _, z, condition = _update_geometry(forward, cfg, aperture, z)
             pred = forward(aperture, z, condition)
             data, _, _, _ = pattern_loss(pred, observed, cfg.lambda_freq,
                                          cfg.lambda_corr)
@@ -1297,8 +1420,15 @@ def refine_geometry(observed: torch.Tensor, forward: "FrozenForward",
             area = aperture.mean().clamp_min(1e-6)
             area_term = (torch.log(area) -
                          math.log(max(area_target, 1e-6))).square()
+            # 几何解锚定在像素解附近：单强度图对平移/180°翻转不敏感，
+            # 不加这一项时几何阶段可能把正三角形转成倒三角形。
+            init_binary = (init > 0.5).float()
+            inter = (aperture * init_binary).sum()
+            union = (aperture.sum() + init_binary.sum() - inter).clamp_min(1e-6)
+            pixel_term = 1.0 - inter / union
             loss = (data + cfg.geom_support_weight * outside +
-                    cfg.geom_area_weight * area_term)
+                    cfg.geom_area_weight * area_term +
+                    cfg.geom_pixel_weight * pixel_term)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(field.parameters(), 1.0)
@@ -1306,16 +1436,67 @@ def refine_geometry(observed: torch.Tensor, forward: "FrozenForward",
     with torch.no_grad():
         soft = field(cfg.grid).clamp(1e-6, 1.0 - 1e-6)
         binary = (soft > 0.5).float()
+        pred_final = forward(soft, z, condition)
+        data_final, _, _, _ = pattern_loss(
+            pred_final, observed, cfg.lambda_freq, cfg.lambda_corr)
+        pattern_mae = float((pred_final - observed).abs().mean())
     info = {
         "geometric_stage": True,
-        "primitive": cfg.geom_primitive,
-        "sides": cfg.geom_sides if cfg.geom_primitive == "polygon" else None,
+        "primitive": primitive,
+        "sides": sides if primitive == "polygon" else None,
         "positive": len(positives),
         "negative": len(negatives),
         "positive_primitives": field.pos_raw.detach().cpu().tolist(),
         "negative_primitives": (field.neg_raw.detach().cpu().tolist()
                                 if field.neg_raw is not None else []),
     }
+    return soft, binary, info, float(data_final.detach()), pattern_mae
+
+
+def refine_geometry(observed: torch.Tensor, forward: "FrozenForward",
+                    cfg: "InversionConfig", init_mask: torch.Tensor,
+                    z: Optional[torch.Tensor],
+                    condition: Optional[torch.Tensor]):
+    """后段：把像素解拟合成平滑基元，再用同一前向微调。
+
+    geom_primitive="auto" 时，会分别尝试 ellipse 和 polygon 3/4/5/6，
+    按“数据项 + 复杂度惩罚”选择；用户不需要预先知道形状。
+    """
+    if z is None or condition is None:
+        _, z, condition = forward.geometry_from_mask(
+            init_mask, nf=cfg.nf, support_fraction=cfg.support_fraction,
+            support_min_fraction=cfg.support_min_fraction,
+            support_min_area=cfg.support_min_area)
+    if cfg.geom_primitive != "auto":
+        return _refine_geometry_one(
+            observed, forward, cfg, init_mask, z, condition,
+            cfg.geom_primitive, cfg.geom_sides)[:3]
+
+    candidates = [("ellipse", 6)]
+    candidates += [("polygon", int(sides)) for sides in cfg.geom_auto_sides]
+    trials = []
+    best = None
+    for primitive, sides in candidates:
+        soft, binary, info, data, mae = _refine_geometry_one(
+            observed, forward, cfg, init_mask, z, condition, primitive, sides)
+        complexity = (cfg.geom_auto_complexity * sides
+                      if primitive == "polygon" else 0.0)
+        score = data + complexity
+        trials.append({
+            "primitive": primitive,
+            "sides": sides if primitive == "polygon" else None,
+            "data_loss": data,
+            "pattern_mae": mae,
+            "score": score,
+            "positive": info["positive"],
+            "negative": info["negative"],
+        })
+        if best is None or score < best[0]:
+            best = (score, soft, binary, info)
+    score, soft, binary, info = best
+    info["auto"] = True
+    info["selected_score"] = float(score)
+    info["trials"] = trials
     return soft, binary, info
 
 
@@ -1411,27 +1592,33 @@ def restart_plan(restarts: int, seed: int):
 # ============================================================
 def _fixed_geometry(forward: FrozenForward, cfg: InversionConfig,
                     device: torch.device):
-    """canonical / known 模式的固定 z 与 condition。"""
-    if cfg.geometry == "known":
-        z = torch.tensor([float(cfg.z_m)], dtype=torch.float64, device=device)
-    else:
-        reference = (cfg.support_fraction * cfg.grid *
-                     forward.config.input_pitch_m)
-        z_value = reference ** 2 / (forward.config.wavelength_m * cfg.nf)
-        z = torch.tensor([z_value], dtype=torch.float64, device=device)
+    """canonical 模式的固定 z 与 condition；不需要用户提供 z。"""
+    reference = (cfg.support_fraction * cfg.grid *
+                 forward.config.input_pitch_m)
+    z_value = reference ** 2 / (forward.config.wavelength_m * cfg.nf)
+    z = torch.tensor([z_value], dtype=torch.float64, device=device)
     return z, forward.condition_from_z(z)
 
 
 def _update_geometry(forward: FrozenForward, cfg: InversionConfig,
                      aperture: torch.Tensor,
                      z_previous: Optional[torch.Tensor]):
-    """self-consistent 模式：用当前 mask 的支撑更新 z。"""
+    """auto 模式：用当前 mask 的显著连通域支撑更新 z。
+
+    z 以 log 空间 EMA 平滑，避免 mask 跳变时 condition 抖动；
+    这里只负责“估计”，是否更新由 run_restart 的冻结策略决定。
+    """
     mask = (aperture.detach() > 0.5).float()
     support, z_new, condition = forward.geometry_from_mask(
-        mask, nf=cfg.nf, support_fraction=cfg.support_fraction)
+        mask, nf=cfg.nf, support_fraction=cfg.support_fraction,
+        support_min_fraction=cfg.support_min_fraction,
+        support_min_area=cfg.support_min_area)
     if z_previous is not None:
-        # 轻微 EMA，避免支撑在优化中跳变时 condition 抖动。
-        z_new = 0.7 * z_previous.to(z_new.dtype) + 0.3 * z_new
+        # 在 log 空间做 EMA：对尺度更自然，也不会把 z 拉向线性平均。
+        log_new = torch.log(z_new.clamp_min(1e-12))
+        log_old = torch.log(z_previous.to(z_new.dtype).clamp_min(1e-12))
+        decay = float(cfg.z_ema_decay)
+        z_new = torch.exp(decay * log_old + (1.0 - decay) * log_new)
         condition = forward.condition_from_z(z_new)
     return support, z_new.detach(), condition.detach()
 
@@ -1451,7 +1638,7 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
 
     z: Optional[torch.Tensor] = None
     condition: Optional[torch.Tensor] = None
-    if cfg.geometry != "self-consistent":
+    if cfg.geometry == "canonical":
         z, condition = _fixed_geometry(forward, cfg, device)
 
     total_steps = max(sum(cfg.steps), 1)
@@ -1495,8 +1682,15 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
             aperture = field(cfg.grid)
             factors = loss_factors(progress, cfg)
 
-            if cfg.geometry == "self-consistent":
-                if z is None or step % cfg.geometry_every == 0:
+            if cfg.geometry == "auto":
+                # 先由初始 mask 得到第一个 z，之后每 geometry_every 步
+                # 用显著连通域支撑更新；进度到 z_freeze_fraction 后冻结，
+                # 避免细节阶段的小伪影把 z 拖飞。
+                if z is None:
+                    _, z, condition = _update_geometry(
+                        forward, cfg, aperture, None)
+                elif (step % cfg.geometry_every == 0 and
+                      progress < cfg.z_freeze_fraction):
                     _, z, condition = _update_geometry(
                         forward, cfg, aperture, z)
             elif z is None:
@@ -1646,11 +1840,18 @@ def run_restart(observed: torch.Tensor, forward: FrozenForward,
             else:
                 aperture_soft = aperture_bin
         support, z_self, condition_self = forward.geometry_from_mask(
-            aperture_bin, nf=cfg.nf, support_fraction=cfg.support_fraction)
-        if cfg.geometry == "self-consistent":
-            z_final, condition_final = z_self, condition_self
+            aperture_bin, nf=cfg.nf, support_fraction=cfg.support_fraction,
+            support_min_fraction=cfg.support_min_fraction,
+            support_min_area=cfg.support_min_area)
+        if cfg.geometry == "auto":
+            # 优化过程中实际使用的 z 才是最终评估的 z；若已冻结就保持不变，
+            # 避免收尾时又重新估计一次导致条件跳变。
+            if z is None:
+                z_final, condition_final = z_self, condition_self
+            else:
+                z_final, condition_final = z, condition
         else:
-            # known / canonical 模式下优化用的是固定 z，最终评估也必须用同一个。
+            # canonical 模式下优化用的是固定 z，最终评估也必须用同一个。
             z_final, condition_final = _fixed_geometry(forward, cfg, device)
         pred_final, simulated_final, delta_final = forward(
             aperture_soft, z_final, condition_final, return_aux=True)
@@ -2007,8 +2208,10 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
         with torch.no_grad():
             mask = reference["mask"].to(forward.device)
             support_ref, z_ref_self, cond_ref_self = forward.geometry_from_mask(
-                mask, nf=cfg.nf, support_fraction=cfg.support_fraction)
-            if cfg.geometry == "self-consistent":
+                mask, nf=cfg.nf, support_fraction=cfg.support_fraction,
+                support_min_fraction=cfg.support_min_fraction,
+                support_min_area=cfg.support_min_area)
+            if cfg.geometry == "auto":
                 z_ref, condition_ref = z_ref_self, cond_ref_self
             else:
                 # 与 top1 的最终评估保持同一套 z 规则。
@@ -2069,6 +2272,8 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
         "grid": cfg.grid,
         "mode": forward.mode,
         "geometry": cfg.geometry,
+        "z_source": ("auto_estimated" if cfg.geometry == "auto"
+                     else "canonical_fixed"),
         "residual_weight": forward.residual_weight,
         "reference": reference_info,
         "config": {
@@ -2091,6 +2296,9 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
             "geom_steps": cfg.geom_steps,
             "geom_primitive": cfg.geom_primitive,
             "geom_sides": cfg.geom_sides,
+            "geom_auto_sides": list(cfg.geom_auto_sides),
+            "geom_auto_complexity": cfg.geom_auto_complexity,
+            "geom_pixel_weight": cfg.geom_pixel_weight,
             "geom_lr": cfg.geom_lr,
             "geom_max_positive": cfg.geom_max_positive,
             "geom_max_negative": cfg.geom_max_negative,
@@ -2115,6 +2323,10 @@ def run_one(observed: torch.Tensor, forward: FrozenForward,
             "primitive_max_fit_area": cfg.primitive_max_fit_area,
             "primitive_min_solidity": cfg.primitive_min_solidity,
             "support_fraction": cfg.support_fraction,
+            "support_min_fraction": cfg.support_min_fraction,
+            "support_min_area": cfg.support_min_area,
+            "z_freeze_fraction": cfg.z_freeze_fraction,
+            "z_ema_decay": cfg.z_ema_decay,
         },
         "candidates": [candidate.summary() for candidate in top],
         "all_candidates": [candidate.summary() for candidate in all_candidates],
@@ -2175,14 +2387,20 @@ def _parse_args():
                         help="checkpoint: FFT+残差；physical: 纯 FFT/ASM 对照")
     parser.add_argument("--residual-weight", type=float, default=1.0,
                         help="checkpoint 模式下残差项权重，0 表示只用传播层")
-    parser.add_argument("--geometry",
-                        choices=("self-consistent", "canonical", "known"),
-                        default=None,
-                        help="z 的来源；默认按图样自洽。光阑仿真模式默认固定合成时的 z")
-    parser.add_argument("--z", type=float, default=None,
-                        help="已知传播距离（米）；配合 --geometry known")
+    parser.add_argument("--geometry", choices=("auto", "canonical"),
+                        default="auto",
+                        help="auto: z 由重建光阑自动估计（默认，不需要输入 z）；"
+                             "canonical: 固定参考支撑的受控对照")
     parser.add_argument("--support-fraction", type=float, default=0.5,
-                        help="canonical 模式的参考支撑占画幅比例")
+                        help="canonical/空 mask 的参考支撑占画幅比例")
+    parser.add_argument("--support-min-fraction", type=float, default=0.02,
+                        help="支撑估计忽略小于总面积该比例的碎片")
+    parser.add_argument("--support-min-area", type=int, default=8,
+                        help="支撑估计忽略小于该像素数的碎片")
+    parser.add_argument("--z-freeze-fraction", type=float, default=0.60,
+                        help="进度超过该值后冻结自动估计的 z")
+    parser.add_argument("--z-ema-decay", type=float, default=0.70,
+                        help="自动 z 的 log 空间 EMA 系数")
     parser.add_argument("--input-mode", choices=("dataset", "image"),
                         default="dataset",
                         help="dataset: 已是 [0,1] log 图样；image: 原始强度图")
@@ -2218,11 +2436,17 @@ def _parse_args():
     parser.add_argument("--geometric-stage", choices=("on", "off"),
                         default="on",
                         help="后段是否把像素解拟合成平滑椭圆基元")
-    parser.add_argument("--geom-primitive", choices=("ellipse", "polygon"),
-                        default="ellipse",
-                        help="几何基元形状；polygon 为正多边形")
+    parser.add_argument("--geom-primitive", choices=("auto", "ellipse", "polygon"),
+                        default="auto",
+                        help="auto: 自动尝试椭圆和正多边形 3/4/5/6；"
+                             "ellipse/polygon: 只用指定基元")
     parser.add_argument("--geom-sides", type=int, default=6,
-                        help="polygon 模式的边数（>=3）")
+                        help="显式 polygon 模式的边数（>=3）")
+    parser.add_argument("--geom-auto-sides", type=int, nargs="+",
+                        default=(3, 4, 5, 6),
+                        help="auto 模式尝试的正多边形边数")
+    parser.add_argument("--geom-auto-complexity", type=float, default=1e-4,
+                        help="auto 模式每多一条边的复杂度惩罚")
     parser.add_argument("--geom-steps", type=int, default=300,
                         help="几何参数化阶段的迭代步数")
     parser.add_argument("--geom-lr", type=float, default=0.02,
@@ -2233,6 +2457,8 @@ def _parse_args():
                         help="最多孔洞（负椭圆）数")
     parser.add_argument("--geom-softness", type=float, default=25.0,
                         help="椭圆边界 sigmoid 软硬，越大越接近二值")
+    parser.add_argument("--geom-pixel-weight", type=float, default=0.10,
+                        help="几何解相对像素解的锚定权重，防止翻转/平移")
     parser.add_argument("--expected", default=None,
                         help="预期光阑 .npy/.png；只在结束后作图对比，不参与优化")
     parser.add_argument("--expected-sample", type=int, default=None,
@@ -2298,8 +2524,6 @@ def main():
         raise SystemExit("必须提供 --checkpoint 或 --run")
     if args.run and args.nf is None:
         raise SystemExit("用 --run 查找 checkpoint 时必须提供 --nf")
-    if args.geometry == "known" and args.z is None:
-        raise SystemExit("--geometry known 需要 --z（米）")
     if args.expected and args.expected_sample is not None:
         raise SystemExit("--expected 与 --expected-sample 只能选一个")
     if args.expected_sample is not None and not args.dataset:
@@ -2323,7 +2547,7 @@ def main():
             f"--nf={args.nf} 与 checkpoint 的 NF={forward.nf} 不一致")
     nf = float(forward.nf if args.nf is None else args.nf)
     grid = forward.config.grid
-    geometry = args.geometry or "self-consistent"
+    geometry = args.geometry or "auto"
 
     cfg = InversionConfig(
         nf=nf,
@@ -2335,8 +2559,11 @@ def main():
         top_k=args.top_k,
         geometry=geometry,
         support_fraction=args.support_fraction,
-        z_m=args.z,
         geometry_every=args.geometry_every,
+        support_min_fraction=args.support_min_fraction,
+        support_min_area=args.support_min_area,
+        z_freeze_fraction=args.z_freeze_fraction,
+        z_ema_decay=args.z_ema_decay,
         ste_steps=args.ste_steps,
         temperature_end=args.temperature_end,
         loss_schedule=args.loss_schedule,
@@ -2355,8 +2582,11 @@ def main():
         geom_steps=args.geom_steps,
         geom_primitive=args.geom_primitive,
         geom_sides=args.geom_sides,
+        geom_auto_sides=tuple(args.geom_auto_sides),
+        geom_auto_complexity=args.geom_auto_complexity,
         geom_lr=args.geom_lr,
         geom_softness=args.geom_softness,
+        geom_pixel_weight=args.geom_pixel_weight,
         lambda_freq=args.lambda_freq,
         lambda_corr=args.lambda_corr,
         lambda_tv=args.lambda_tv,
@@ -2385,7 +2615,9 @@ def main():
     print(f"设备：{device}")
     print(f"checkpoint：{checkpoint}")
     print(f"NF={nf:g}  grid={grid}  mode={args.forward_mode}  "
-          f"geometry={geometry}")
+          f"geometry={geometry} (z 自动估计，无需输入)")
+    print(f"geom_primitive={args.geom_primitive}  "
+          f"geom_auto_sides={tuple(args.geom_auto_sides)}")
 
     observed = load_pattern(args.pattern, grid=grid,
                             input_mode=args.input_mode,

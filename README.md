@@ -101,15 +101,15 @@ python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
 python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern path/to/pattern.npy \
-  --nf 1 \
   --out inverse_runs/case_nf1
 ```
 
 - **网络输入只有衍射图样**（`--pattern`）；配对光阑只能通过 `--expected` 用于作图对比，绝不进入 loss/梯度/优化；
-- `z` 默认由当前光阑支撑和 NF 自洽计算，不需要外部给；
+- **不需要传 z**：默认 `--geometry auto`，用重建光阑的显著连通域支撑自动估计 z，前 60% 更新、之后冻结；`--geometry canonical` 只是固定参考支撑的受控对照；
+- 默认 `--forward-mode checkpoint`，用训练好的 FFT + 残差 U-Net 做正演；`physical` 仅作纯物理对照；
 - 损失分阶段：前期只拟合数据/大方向，后期渐入二值/形态学先验；数据项含相关系数项（尺度不变，抑制空/糊斑），先验与数据的占比按 EMA 动态保持；
 - 默认迭代 960 步（`--steps` 可继续加长）；收尾对 mask 做 `--edge-sigma` 高斯平滑，输出是平滑边缘而不是硬阈值锯齿；
-- **后段几何参数化**：像素解 → 正基元（椭圆或正 N 边形）− 孔洞 → 用同一前向微调参数，输出平滑的基元并集（`--geom-primitive polygon --geom-sides N`；`--geometric-stage off` 可关闭）；
+- **后段几何参数化**：像素解 → 基元（椭圆或正 N 边形）− 孔洞 → 用同一前向微调参数，输出平滑的基元并集；默认 `--geom-primitive auto` 会自动尝试椭圆和正多边形 3/4/5/6 并按数据项选择（也可显式 `ellipse` / `polygon --geom-sides N`；`--geometric-stage off` 可关闭）；
 - 光阑参数化带平滑水平集；默认不做椭圆/矩形拟合，避免抹掉孔洞；
 - 输出 top-3 候选、重建图样、`pattern_mae` / `physical_mae` 等诊断；
 - 加 `--expected` / `--expected-sample` 可生成“预期 vs 实际 top1”对照图；参考光阑只做对比，不参与优化；
