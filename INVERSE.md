@@ -23,7 +23,7 @@
 
 ---
 
-## 1. z 未知时怎么处理
+## 1. z 完全自动，不需要输入
 
 当前 `runs/v1` 的 physics checkpoint 全部使用 `fraunhofer` 传播层。
 `train.py` 的 `ForwardModel` 只有在：
@@ -38,27 +38,34 @@ propagator == "asm" and kind == "physics"
 - `z` 只进入残差网络的条件
   `condition = [log(z), log(detector_pitch)]`；
 - NF<0.1 时残差为零，`z` 完全不重要；
-- NF≥0.1 时用当前光阑的支撑 `D` 和已知 NF 自洽计算：
+- NF≥0.1 时由重建光阑自动估计：
 
 ```text
-D = max(行跨度, 列跨度) × input_pitch
+D = 显著连通域的联合包围盒跨度（忽略小碎片）
 z = D² / (λ · NF)
 detector_pitch = λz / (N · input_pitch)
 condition = (log([z, detector_pitch]) - mean) / std
 ```
 
-CLI 的 `--geometry` 有三种：
+CLI 的 `--geometry` 有两种：
 
 | 模式 | 含义 |
 |---|---|
-| `self-consistent`（默认） | 每 10 步用当前二值光阑的支撑更新 `z`，不需要外部给 z |
-| `canonical` | 用 `D_ref = support_fraction × N × input_pitch` 固定一个参考 z |
-| `known` | 用户用 `--z` 明确给出传播距离（米） |
+| `auto`（默认） | 用当前二值光阑的显著连通域支撑估计 `z`；前 60% 进度更新，之后冻结 |
+| `canonical` | 用 `D_ref = support_fraction × N × input_pitch` 固定一个参考 z，仅作受控对照 |
 
-只有 `--forward-mode physical`（纯 ASM）时 `z` 才真正进入传播；这时未知 z 会带来
-`a(x) → a(x/s), z → s²z` 的尺度耦合，必须用 `--z` 或接受“只恢复形状、不恢复绝对尺寸”。
+不再提供 `--z`，也不需要 `--geometry known`。自动估计的细节：
 
-`geometry_from_mask`（[inverse.py:209](inverse.py#L209)）就是这个式子；NF 的定义、符号约定与数值示例见 [GUIDE.md §3.2](GUIDE.md#32-菲涅耳数与传播几何)。
+- 支撑只统计面积不小于 `max(support_min_area, support_min_fraction × 总面积)` 的连通域；
+- `z` 在 log 空间做 EMA（`z_ema_decay=0.7`），避免 mask 跳变；
+- 进度到 `z_freeze_fraction=0.6` 后冻结，避免细节阶段的小伪影把 `z` 拖飞；
+- 最终评估使用优化过程中实际冻结的 `z`，不会在收尾时重新估计。
+
+只有 `--forward-mode physical`（纯 ASM）时 `z` 才真正进入传播；这时绝对尺度
+本身存在 `a(x) → a(x/s), z → s²z` 的耦合，自动估计只是“与当前重建支撑自洽”的
+估计，不是唯一真值。
+
+`geometry_from_mask`（[inverse.py:256](inverse.py#L256)）就是这个式子；NF 的定义、符号约定与数值示例见 [GUIDE.md §3.2](GUIDE.md#32-菲涅耳数与传播几何)。
 
 ---
 
@@ -134,6 +141,8 @@ STE 只看最后 80 步，不做 gain 归一化；适合和旧结果做 A/B 对�
 | `Opening₃` | 软形态学开运算，惩罚宽/高小于约 3 像素的细碎结构 |
 | `Opening₅` | 更严格的 5 像素最小特征；默认关闭，避免擦掉细缝 |
 | `Island` | 按面积归一化的孤立小岛惩罚：局部 7×7 前景质量不足的像素 |
+| `Border` | 前景质量落在画幅边缘的比例；`--lambda-border` 默认 0，可抑制贴边碎片 |
+| `Spread` | 前景相对质心的归一化空间方差；`--lambda-spread` 默认 0，可抑制散落碎片 |
 | `AreaHinge` | 只惩罚极端全开/全挡（面积 <0.002 或 >0.6） |
 | `mean|delta|` | checkpoint 模式下抑制反演利用残差网络 |
 
@@ -191,19 +200,30 @@ a = sigmoid(GaussianBlur(theta, sigma(t)) / T)
   → 正基元并集 − 孔洞并集，sigmoid(softness) 渲染
 ```
 
-- `--geom-primitive ellipse`（默认）或 `polygon`；`polygon` 时所有基元共用
-  `--geom-sides N`（正 N 边形），参数为 `(cx, cy, R, angle)`；
+- `--geom-primitive contour`（默认）：不做基元假设，直接对二值像素解提 0.5
+  等值线，RDP 简化后用亚像素多边形填充；保留任意凹凸/孔洞，数据拟合通常
+  优于强制椭圆/正多边形；`--geom-contour-clean border,min_area,morph`
+  可在提轮廓前删除贴边连通域、小碎片并做形态学开闭；
+- 边缘抑制也可放进优化：`--lambda-border`（贴边质量）、`--lambda-spread`
+  （空间方差）默认都是 0；`--border-margin` 控制贴边宽度；
+- `--geom-primitive auto`：分别尝试 ellipse 和 polygon 3/4/5/6，
+  按“数据项 + 每边复杂度惩罚”选择；也可以显式写 `ellipse` 或
+  `polygon --geom-sides N`（所有基元共用边数，参数为 `(cx, cy, R, angle)`）；
 - 正/负基元最多 `--geom-max-pos 8` / `--geom-max-neg 4`；半径用 softplus 保证为正，
   并限制在画幅内；
-- 正则：`geom_support_weight`（支撑外质量）、`geom_area_weight`（对数面积目标），
-  防止基元膨胀到全画幅；
-- 输出边界由参数化 sigmoid 生成，天然平滑；`--geometric-stage off` 回到像素解；
-- `result.json` 的 `primitive_info` 记录 `primitive`、`sides` 和
-  `positive_primitives` / `negative_primitives`（像素坐标）。
+- 正则：`geom_support_weight`（支撑外质量）、`geom_area_weight`（对数面积目标）、
+  `geom_pixel_weight`（相对像素解的软 IoU 锚定），防止基元膨胀到全画幅或
+  被单强度图的平移/翻转歧义带到另一个等价解；
+- 基元模式的边界由参数化 sigmoid 生成，天然平滑；contour 模式由亚像素多边形填充，
+  保留任意凹凸/孔洞；`--geometric-stage off` 回到像素解；
+- `result.json` 的 `primitive_info` 记录 `primitive`、`sides`、
+  `positive_primitives` / `negative_primitives`；contour 模式记录
+  `contours` / `vertices` / `epsilon`，auto 模式记录 `trials`。
 
-实测（NF=1，scale 0.5，physical 前向，known z）：正多边形基元对方形/五边形/六边形
+旧版受控对照（physical 前向，known z）中：正多边形基元对方形/五边形/六边形
 IoU≈0.91/0.99/0.998（三角形 0.70，需 `--restarts 8`）；椭圆基元对圆盘 IoU≈1.0。
-限制：基元并集能精确表达圆盘、正多边形、多孔组合；但数字 0/8 这类“细环 + 孔”需要
+自动 z + checkpoint 路径会给出不同的数值，但基元表达能力的限制相同：
+基元并集能精确表达圆盘、正多边形、多孔组合；但数字 0/8 这类“细环 + 孔”需要
 像素初始化里已经有闭合孔，初始化没有孔时几何阶段无法凭空生成，仍会退化成若干基元块。
 
 ---
@@ -214,17 +234,18 @@ IoU≈0.91/0.99/0.998（三角形 0.70，需 `--restarts 8`）；椭圆基元对
 2. 加载 physics checkpoint，冻结全部参数；
 3. 初始化 4 个候选：稀疏孔、随机块、椭圆 blob、光栅/环等不同面积与几何类型；
 4. 多尺度 `64 → 128 → 256` 优化，同时按 §2 的三阶段调度：前期只拟合数据/大方向，中期渐入形状先验，后期收紧细节；
-5. 最后 160 步且进入细节阶段后切 STE；后续再做 `edge_sigma` 高斯平滑，输出平滑边缘；
-6. 对二值 mask 做几何整理：删除小岛，把中小型连通域拟合成椭圆/旋转矩形（`--primitive-fit`）；
-7. 每个 restart 用整理后的光阑重算 `z`，计算：
+5. 自动 `z`：每一步用当前二值光阑的显著连通域支撑估计 `z`，每 10 步更新一次，进度到 60% 后冻结；
+6. 最后 160 步且进入细节阶段后切 STE；随后进入几何/平滑阶段（默认 `contour`，`--geometric-stage off` 时才用 `edge_sigma` 高斯平滑）；
+7. 几何阶段：`--geom-primitive contour`（默认）直接平滑 0.5 等值线；`auto` 会分别尝试椭圆和正多边形 3/4/5/6，按数据项 + 复杂度选择；也可显式指定 ellipse/polygon；
+8. 每个 restart 用最终光阑计算：
    - `pattern_mae`：checkpoint 重建误差；
    - `physical_mae`：纯 FFT/ASM 独立重建误差；
    - `residual_ratio`：残差项占比；
    - `condition_zscore`：条件是否外推；
    - `area_fraction` / `support_fraction` / `primitive_components`；
-8. 按 `data_loss + 0.05·prior` 排序，贪心选 3 个质心对齐 IoU < 0.8 的不同候选；
-9. 保存 top-3 和 `comparison.png`；给了 `--expected` / `--expected-sample` 时，
-   再用参考光阑生成 `expected_vs_top1.png`。
+9. 按 `data_loss + 0.05·prior` 排序，贪心选 3 个质心对齐 IoU < 0.8 的不同候选；
+10. 保存 top-3 和 `comparison.png`；给了 `--expected` / `--expected-sample` 时，
+    再用参考光阑生成 `expected_vs_top1.png`。
 
 ---
 
@@ -234,9 +255,21 @@ IoU≈0.91/0.99/0.998（三角形 0.70，需 `--restarts 8`）；椭圆基元对
 python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern path/to/pattern.npy \
-  --nf 1 \
   --out inverse_runs/case_nf1
 ```
+
+如果类别已知，可以给一个强形状先验（**不是盲反演**）：
+
+```bash
+python inverse.py \
+  --checkpoint runs/v1/nf_1/physics/best_model.pt \
+  --pattern path/to/pattern.npy \
+  --init-template path/to/template_z.png \
+  --out inverse_runs/case_nf1_template
+```
+
+`--init-template` 只把模板作为 `theta` 初始化，不直接作为 loss 的答案；
+它适合“已知是字母 Z / 圆孔 / 某类形状”的场景。
 
 也可以从 `runs/v1` 自动找 checkpoint：
 
@@ -247,23 +280,22 @@ python inverse.py \
   --out inverse_runs/case_nf1
 ```
 
-已知传播距离时：
+不需要给传播距离；下面的命令会自动估计 z：
 
 ```bash
 python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern path/to/pattern.npy \
-  --nf 1 --geometry known --z 0.12 \
   --out inverse_runs/case_nf1
 ```
 
-纯物理 ASM 对照：
+纯物理 ASM 对照（同样不需要 `--z`）：
 
 ```bash
 python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern path/to/pattern.npy \
-  --nf 1 --forward-mode physical --geometry known --z 0.12 \
+  --forward-mode physical \
   --out inverse_runs/case_nf1_asm
 ```
 
@@ -288,14 +320,14 @@ python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern inverse_runs/cases/digit8_nf1_s0.5/pattern.npy \
   --expected inverse_runs/cases/digit8_nf1_s0.5/gt.npy \
-  --nf 1 --forward-mode physical --geometry known --z 1.2639 \
+  --forward-mode checkpoint \
   --out inverse_runs/final_digit8
 ```
 
 - `pattern.npy` 是唯一进入反演的输入；`gt.npy` 只通过 `--expected` 用于
   `expected_vs_top1.png` 和 `reference` 指标，不进入 loss、梯度或优化；
 - `--case-scale` 控制光阑大小：远场图样的特征尺寸约为 `N/n_D` 像素，光阑越大图样越紧凑、越不可辨识；
-- `--geometry known --z` 是“已知传播距离”的受控对比；真实场景用默认的 self-consistent。
+- z 由程序自动估计，不需要 `--z`，也不需要 `--geometry known`。
 
 正多边形用例：
 
@@ -307,13 +339,13 @@ python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern inverse_runs/cases/hexagon_nf1_s0.5/pattern.npy \
   --expected inverse_runs/cases/hexagon_nf1_s0.5/gt.npy \
-  --nf 1 --forward-mode physical --geometry known --z 0.7699 \
-  --geom-primitive polygon --geom-sides 6 \
   --out inverse_runs/poly_hexagon
 ```
 
-`--geom-sides` 要和目标多边形一致；`--geom-primitive polygon` 只影响后段基元拟合，
-网络输入仍只有 `pattern.npy`。
+默认 `--geom-primitive contour` 会直接平滑 0.5 等值线，不假设边数；
+如果想让几何阶段尝试椭圆和正多边形 3/4/5/6，用 `--geom-primitive auto`；
+如果已经知道边数，也可以显式写 `--geom-primitive polygon --geom-sides 6`。
+无论哪种，网络输入仍然只有 `pattern.npy`，z 也不需要输入。
 
 带“预期光阑”的对比（只做图，不参与优化）：
 
@@ -375,15 +407,20 @@ inverse_runs/case_nf1/
 
 `result.json` 关键字段：
 
+- `geometry` / `z_source`：`auto` + `auto_estimated`，或 `canonical` + `canonical_fixed`；
 - `candidates`：每个候选的 `pattern_mae`、`physical_mae`、`residual_ratio`、
   `area_fraction`、`support_fraction`、`z_m`、`condition_zscore`、
   `primitive_components`、`primitive_info`、`loss_gain`、`coarse_loss`；
+- `primitive_info`：`contour` 模式记录 `contours`、`vertices`、`epsilon`；
+  `auto` 模式的 `trials` 记录每种基元（ellipse / 3/4/5/6 边）的
+  `data_loss`、`pattern_mae`、`score`，以及最终选择；
 - `reference`：预期光阑的 `pattern_mae`、`iou_top1`、`area_fraction`、`z_m`、`source`；
   只做诊断，不参与优化；
 - `pairwise_iou` / `ambiguous`：top-3 是否给出不同解；
 - `warnings`：condition 外推、残差过大、纯物理不一致、面积异常。
 
-`primitive_info` 记录连通域总数、拟合数、删除的小岛数、保留的大结构数。
+`primitive_info` 记录连通域总数、拟合数、删除的小岛数、保留的大结构数；
+`contour` 模式则记录轮廓数、顶点数、RDP 阈值。  
 如果 `primitive_info.fallback = kept_raw_pixel_mask`，说明几何拟合后为空，保留了像素解。
 
 无 GT 时判断结果是否可信，优先看：
@@ -399,13 +436,16 @@ inverse_runs/case_nf1/
 ## 6. 已知边界
 
 - 单张强度图丢失相位，反演是严重欠定的：远场存在平移、镜像/共轭多解；
-  近场未知 z 时存在尺度耦合；
-- 前期没有形状先验时，个别 restart（尤其是稀疏初始化）可能退化成空 mask；
-  这种候选面积接近 0，`select_diverse` 会把它过滤掉，必要时加 `--restarts` 留余量；
+  近场未知 z 时存在尺度耦合；自动 z 只是“与当前重建支撑自洽”的估计，
+  不是唯一真值，尤其当重建形状本身偏离时；
+- 前期没有形状先验时，个别 restart（尤其是稀疏初始化）可能退化成空 mask
+  或散到画幅边缘；自动 z 会被这些碎片撑大，因此支撑估计只统计显著连通域，
+  并在 60% 进度后冻结；必要时加 `--restarts` 留余量；
 - 数字 0/8 这类“环 + 孔”形状在 NF=1 的远场 log 图样里与实心圆盘高度接近：
   同一强度的多个孔径都能拟合到很小的 MAE，优化容易落到“实心斑/单孔”的局部极小。
-  实测（`--geometry known`，scale 0.5，960 步 + 几何参数化）：圆盘 IoU≈1.0（单椭圆，pattern MAE 2.2e-4），数字 8 约 0.18、数字 0 约 0.04；
-  这是单幅远场强度 + 无逆网络先验的固有限制，不是输入接口问题；
+  旧版受控对照（`--geometry known` + physical，scale 0.5）中圆盘 IoU≈1.0，
+  数字 8 约 0.18、数字 0 约 0.04；自动 z + checkpoint 路径的数字结果会不同，
+  但拓扑限制仍然存在；
 - 要稳定恢复 0/8 这类拓扑，需要训练 pattern→aperture 的逆网络（数据里有 1000 对），
   或引入多平面/相位/支撑约束；只调 loss 权重收益有限；
 - 简单实心圆孔可以从随机初始化恢复；复杂多孔/环形/光栅会陷入
