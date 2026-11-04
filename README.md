@@ -1,8 +1,8 @@
 # Aperture-Diffraction
 
-光阑形状 → 衍射图样的正向预测。正向流程保留三个脚本，分别负责 **按 NF 生成数据**、**训练** 和 **评估与可视化**；逆向只做单张图推理，不训练逆网络。
+光阑形状 → 衍射图样的正向预测。正向流程保留三个脚本，分别负责 **按 NF 生成数据**、**训练** 和 **评估与可视化**；逆向只做单张图推理，不训练逆网络；反设计（`design.py`）走相反方向：给定想要的图样，直接解出一块能产生它的光阑。
 
-> 详细的代码结构、每个参数的含义、输出图解读与常见问题见 [GUIDE.md](GUIDE.md)；单图逆向见 [INVERSE.md](INVERSE.md)。
+> 详细的代码结构、每个参数的含义、输出图解读与常见问题见 [GUIDE.md](GUIDE.md)；单图逆向见 [INVERSE.md](INVERSE.md)；目标图样反设计光阑见 [DESIGN.md](DESIGN.md)。
 
 ## 依赖
 
@@ -108,13 +108,30 @@ python inverse.py \
 - **不需要传 z**：默认 `--geometry auto`，用重建光阑的显著连通域支撑自动估计 z，前 60% 更新、之后冻结；`--geometry canonical` 只是固定参考支撑的受控对照；
 - 默认 `--forward-mode checkpoint`，用训练好的 FFT + 残差 U-Net 做正演；`physical` 仅作纯物理对照；
 - 损失分阶段：前期只拟合数据/大方向，后期渐入二值/形态学先验；数据项含相关系数项（尺度不变，抑制空/糊斑），先验与数据的占比按 EMA 动态保持；
-- 默认迭代 960 步（`--steps` 可继续加长）；收尾对 mask 做 `--edge-sigma` 高斯平滑，输出是平滑边缘而不是硬阈值锯齿；
-- **后段几何参数化**：像素解 → 基元（椭圆或正 N 边形）− 孔洞 → 用同一前向微调参数，输出平滑的基元并集；默认 `--geom-primitive auto` 会自动尝试椭圆和正多边形 3/4/5/6 并按数据项选择（也可显式 `ellipse` / `polygon --geom-sides N`；`--geometric-stage off` 可关闭）；
+- 默认迭代 960 步（`--steps` 可继续加长）；收尾默认用 `contour` 对 0.5 等值线做亚像素平滑；`--geometric-stage off` 时才走 `--edge-sigma` 高斯平滑；
+- **后段平滑**：默认 `--geom-primitive contour` 对二值像素解提 0.5 等值线，RDP 简化后用亚像素多边形填充，保留任意凹凸/孔洞；`auto` 可改为自动尝试椭圆和正多边形 3/4/5/6，`ellipse` / `polygon --geom-sides N` 可强制指定（`--geometric-stage off` 可关闭）；
 - 光阑参数化带平滑水平集；默认不做椭圆/矩形拟合，避免抹掉孔洞；
 - 输出 top-3 候选、重建图样、`pattern_mae` / `physical_mae` 等诊断；
 - 加 `--expected` / `--expected-sample` 可生成“预期 vs 实际 top1”对照图；参考光阑只做对比，不参与优化；
 - 数字 0/8/圆盘/正多边形等测试用例由 `inverse.py --write-cases` 离线生成（GT 仅用于对比，网络不接收光阑）；
 - 详细说明见 [INVERSE.md](INVERSE.md)。
+
+## 5. 目标图样 → 反设计光阑（设计，不是反演）
+
+```bash
+python design.py --char Z --out design_runs/letterZ_binary
+```
+
+- 输入是**想要的**远场图样（字符，或 PNG/JPG/BMP/WEBP/TIFF/NPY 图片，放 `inputs/` 即可），输出是一块**任意形状**的光阑，使它的夫琅禾费衍射图样就是这张图；不要求是“原来那块”光阑；
+- 纯 FFT 正向 + 测试时优化，不加载 checkpoint、不用数据集；
+- 光阑长什么样不受限，解出来是干涉条纹状的二值掩模（看起来像二维码），`aperture.png` 可直接拿去加工；
+- **实振幅光阑的远场必然中心对称** $I(\mathbf{k})=I(-\mathbf{k})$，所以 Z 这种不对称图样不能单独居中：默认把目标放在偏轴 ROI，对跖象限会自动出现旋转 180° 的孪生像（`corr_twin` = 1.0000，物理自检）；
+- `--modulation gray` 是连续透过率（拟合上限），`--modulation phase` 是纯相位光阑（Z 居中、无孪生像、效率最高）；
+- 输出六联图：目标 / 拟合图样 / 光阑 / 全视场 / 误差 / 收敛曲线；
+- 想用自己的图片：把它放进 `inputs/`，然后
+  `python design.py --target inputs/你的图.png --out design_runs/我的图`；
+  四步操作、图片要求和出错对照表见 [DESIGN.md §3.1](DESIGN.md#31-自己加图片四步)；
+- 详细说明见 [DESIGN.md](DESIGN.md)。
 
 ## 项目结构
 
@@ -123,18 +140,22 @@ Aperture-Diffraction/
 ├── README.md
 ├── GUIDE.md             # 正向流程详细说明
 ├── INVERSE.md           # 单图逆向说明
+├── DESIGN.md            # 目标图样反设计光阑说明
 ├── .gitignore
 ├── generate.py          # 按 NF 生成数据 + 传播验证
 ├── train.py             # 模型、损失、训练与曲线/样例图
 ├── evaluate.py          # 纯物理/模型对比 + 全部可视化
 ├── inverse.py           # 单图逆向：正向适配 + 物理先验 + 几何后处理 + 用例生成 + CLI
+├── design.py            # 目标图样 → 反设计光阑（二值/灰阶/相位，CGH）
 ├── data/.gitkeep        # 生成的数据（不提交）
 ├── runs/.gitkeep        # 权重与训练记录（不提交）
 ├── results/.gitkeep     # 评估与图片（不提交）
-└── inverse_runs/        # 单图逆向输出（不提交）
+├── inverse_runs/        # 单图逆向输出（不提交）
+├── design_runs/         # 反设计输出（不提交）
+└── inputs/              # 反设计的目标图样（示例图片）
 ```
 
-`data/`、`runs/`、`results/` 只保留空目录占位，实际数组、权重、图片由 `.gitignore` 排除。所有输出目录必须不存在；重跑请换名字。设备默认 `auto`，可加 `--device cpu` 或 `--device cuda`。
+`data/`、`runs/`、`results/`、`inverse_runs/`、`design_runs/` 只保留空目录占位，实际数组、权重、图片由 `.gitignore` 排除。所有输出目录必须不存在；重跑请换名字。设备默认 `auto`，可加 `--device cpu` 或 `--device cuda`。
 
 ## 流程检查
 

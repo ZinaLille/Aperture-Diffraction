@@ -141,6 +141,8 @@ STE 只看最后 80 步，不做 gain 归一化；适合和旧结果做 A/B 对�
 | `Opening₃` | 软形态学开运算，惩罚宽/高小于约 3 像素的细碎结构 |
 | `Opening₅` | 更严格的 5 像素最小特征；默认关闭，避免擦掉细缝 |
 | `Island` | 按面积归一化的孤立小岛惩罚：局部 7×7 前景质量不足的像素 |
+| `Border` | 前景质量落在画幅边缘的比例；`--lambda-border` 默认 0，可抑制贴边碎片 |
+| `Spread` | 前景相对质心的归一化空间方差；`--lambda-spread` 默认 0，可抑制散落碎片 |
 | `AreaHinge` | 只惩罚极端全开/全挡（面积 <0.002 或 >0.6） |
 | `mean|delta|` | checkpoint 模式下抑制反演利用残差网络 |
 
@@ -193,7 +195,13 @@ a = sigmoid(GaussianBlur(theta, sigma(t)) / T)
   → 正基元并集 − 孔洞并集，sigmoid(softness) 渲染
 ```
 
-- `--geom-primitive auto`（默认）：分别尝试 ellipse 和 polygon 3/4/5/6，
+- `--geom-primitive contour`（默认）：不做基元假设，直接对二值像素解提 0.5
+  等值线，RDP 简化后用亚像素多边形填充；保留任意凹凸/孔洞，数据拟合通常
+  优于强制椭圆/正多边形；`--geom-contour-clean border,min_area,morph`
+  可在提轮廓前删除贴边连通域、小碎片并做形态学开闭；
+- 边缘抑制也可放进优化：`--lambda-border`（贴边质量）、`--lambda-spread`
+  （空间方差）默认都是 0；`--border-margin` 控制贴边宽度；
+- `--geom-primitive auto`：分别尝试 ellipse 和 polygon 3/4/5/6，
   按“数据项 + 每边复杂度惩罚”选择；也可以显式写 `ellipse` 或
   `polygon --geom-sides N`（所有基元共用边数，参数为 `(cx, cy, R, angle)`）；
 - 正/负基元最多 `--geom-max-pos 8` / `--geom-max-neg 4`；半径用 softplus 保证为正，
@@ -201,9 +209,11 @@ a = sigmoid(GaussianBlur(theta, sigma(t)) / T)
 - 正则：`geom_support_weight`（支撑外质量）、`geom_area_weight`（对数面积目标）、
   `geom_pixel_weight`（相对像素解的软 IoU 锚定），防止基元膨胀到全画幅或
   被单强度图的平移/翻转歧义带到另一个等价解；
-- 输出边界由参数化 sigmoid 生成，天然平滑；`--geometric-stage off` 回到像素解；
+- 基元模式的边界由参数化 sigmoid 生成，天然平滑；contour 模式由亚像素多边形填充，
+  保留任意凹凸/孔洞；`--geometric-stage off` 回到像素解；
 - `result.json` 的 `primitive_info` 记录 `primitive`、`sides`、
-  `positive_primitives` / `negative_primitives`，以及 auto 模式下的 `trials`。
+  `positive_primitives` / `negative_primitives`；contour 模式记录
+  `contours` / `vertices` / `epsilon`，auto 模式记录 `trials`。
 
 旧版受控对照（physical 前向，known z）中：正多边形基元对方形/五边形/六边形
 IoU≈0.91/0.99/0.998（三角形 0.70，需 `--restarts 8`）；椭圆基元对圆盘 IoU≈1.0。
@@ -220,8 +230,8 @@ IoU≈0.91/0.99/0.998（三角形 0.70，需 `--restarts 8`）；椭圆基元对
 3. 初始化 4 个候选：稀疏孔、随机块、椭圆 blob、光栅/环等不同面积与几何类型；
 4. 多尺度 `64 → 128 → 256` 优化，同时按 §2 的三阶段调度：前期只拟合数据/大方向，中期渐入形状先验，后期收紧细节；
 5. 自动 `z`：每一步用当前二值光阑的显著连通域支撑估计 `z`，每 10 步更新一次，进度到 60% 后冻结；
-6. 最后 160 步且进入细节阶段后切 STE；后续再做 `edge_sigma` 高斯平滑，输出平滑边缘；
-7. 几何阶段：`--geom-primitive auto`（默认）会分别尝试椭圆和正多边形 3/4/5/6，按数据项 + 复杂度选择；也可显式指定 ellipse/polygon；
+6. 最后 160 步且进入细节阶段后切 STE；随后进入几何/平滑阶段（默认 `contour`，`--geometric-stage off` 时才用 `edge_sigma` 高斯平滑）；
+7. 几何阶段：`--geom-primitive contour`（默认）直接平滑 0.5 等值线；`auto` 会分别尝试椭圆和正多边形 3/4/5/6，按数据项 + 复杂度选择；也可显式指定 ellipse/polygon；
 8. 每个 restart 用最终光阑计算：
    - `pattern_mae`：checkpoint 重建误差；
    - `physical_mae`：纯 FFT/ASM 独立重建误差；
@@ -242,6 +252,19 @@ python inverse.py \
   --pattern path/to/pattern.npy \
   --out inverse_runs/case_nf1
 ```
+
+如果类别已知，可以给一个强形状先验（**不是盲反演**）：
+
+```bash
+python inverse.py \
+  --checkpoint runs/v1/nf_1/physics/best_model.pt \
+  --pattern path/to/pattern.npy \
+  --init-template path/to/template_z.png \
+  --out inverse_runs/case_nf1_template
+```
+
+`--init-template` 只把模板作为 `theta` 初始化，不直接作为 loss 的答案；
+它适合“已知是字母 Z / 圆孔 / 某类形状”的场景。
 
 也可以从 `runs/v1` 自动找 checkpoint：
 
@@ -311,11 +334,11 @@ python inverse.py \
   --checkpoint runs/v1/nf_1/physics/best_model.pt \
   --pattern inverse_runs/cases/hexagon_nf1_s0.5/pattern.npy \
   --expected inverse_runs/cases/hexagon_nf1_s0.5/gt.npy \
-  --geom-primitive auto \
   --out inverse_runs/poly_hexagon
 ```
 
-`--geom-primitive auto`（默认）会自动尝试椭圆和正多边形 3/4/5/6；
+默认 `--geom-primitive contour` 会直接平滑 0.5 等值线，不假设边数；
+如果想让几何阶段尝试椭圆和正多边形 3/4/5/6，用 `--geom-primitive auto`；
 如果已经知道边数，也可以显式写 `--geom-primitive polygon --geom-sides 6`。
 无论哪种，网络输入仍然只有 `pattern.npy`，z 也不需要输入。
 
@@ -383,14 +406,16 @@ inverse_runs/case_nf1/
 - `candidates`：每个候选的 `pattern_mae`、`physical_mae`、`residual_ratio`、
   `area_fraction`、`support_fraction`、`z_m`、`condition_zscore`、
   `primitive_components`、`primitive_info`、`loss_gain`、`coarse_loss`；
-- `primitive_info.trials`：`geom_primitive=auto` 时每种基元（ellipse / 3/4/5/6 边）
-  的 `data_loss`、`pattern_mae`、`score`，以及最终选择；
+- `primitive_info`：`contour` 模式记录 `contours`、`vertices`、`epsilon`；
+  `auto` 模式的 `trials` 记录每种基元（ellipse / 3/4/5/6 边）的
+  `data_loss`、`pattern_mae`、`score`，以及最终选择；
 - `reference`：预期光阑的 `pattern_mae`、`iou_top1`、`area_fraction`、`z_m`、`source`；
   只做诊断，不参与优化；
 - `pairwise_iou` / `ambiguous`：top-3 是否给出不同解；
 - `warnings`：condition 外推、残差过大、纯物理不一致、面积异常。
 
-`primitive_info` 记录连通域总数、拟合数、删除的小岛数、保留的大结构数。
+`primitive_info` 记录连通域总数、拟合数、删除的小岛数、保留的大结构数；
+`contour` 模式则记录轮廓数、顶点数、RDP 阈值。  
 如果 `primitive_info.fallback = kept_raw_pixel_mask`，说明几何拟合后为空，保留了像素解。
 
 无 GT 时判断结果是否可信，优先看：
