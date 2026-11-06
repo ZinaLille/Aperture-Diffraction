@@ -26,6 +26,10 @@ python generate.py --samples 1000 --out data/v1
 - `NF < --far-threshold`（默认 0.1）用夫琅禾费 FFT 生成标签，其余用缩放角谱。
 - 写入数据前自动做传播验证：远场 FFT/角谱一致性、补零与细分收敛、少量抽样点的独立 RS1 积分；报告写入 `validation.json`，不通过则不写训练数组。
 - 每张光阑先量支撑宽度 `D`（非零像素包围盒的较长跨度，含孔间距），菲涅耳数 `NF = D²/(λz)`；生成时按目标 NF 反解 `z = D²/(λNF)`，观察面像素间距 `λz/(NΔx)`；默认 256 网格、10 μm 像素、532 nm、`D` 随样本变化所以 `z` 也逐样本不同。
+- **`--hologram-fraction 0.2`**：把这一比例的样本替换成**设计产物风格**的密集干涉条纹掩模（周期几个像素、fill 0.3~0.55），
+  用来让网络覆盖 `design.py` 查询的那片区域——这是改善「设计结果」最直接的办法（原因见 §4）。
+  `--hologram-mode binary|gray|both`、`--hologram-fill LO HI` 控制形态；被替换的编号写进 `manifest.json` 的 `hologram.ids`。
+  **未被替换的样本与同 seed/samples 的旧数据集逐位相同**（用独立 RNG，自然光阑生成序列不变）。
 
 输出：
 
@@ -174,6 +178,9 @@ python generate_v2.py --samples 1000 --glass-shared --glass-correlation-um 600 -
 
 # 只要部分 NF 组（更快）
 python generate_v2.py --samples 600 --nf 1 --glass-shared --out data/v2_nf1
+
+# 混入设计产物分布（推荐，能改善 design 的可靠性）
+python generate_v2.py --samples 1000 --nf 1 --glass-shared --glass-preset weak --hologram-fraction 0.2 --out data/v2_nf1_holo
 
 # 逐样本换玻璃（默认），做「每张图都换一块」的对照
 python generate_v2.py --samples 1000 --out data/v2_random

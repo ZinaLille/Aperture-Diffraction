@@ -66,10 +66,11 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from generate import (STRATEGIES, PhysicsConfig, add_physics_args, check_nf,
-                      config_from_args, fraunhofer_raw, geometry, group_name,
-                      image_metrics, make_aperture, new_output, postprocess,
-                      split_ids, standard_apertures, write_json)
+from generate import (STRATEGIES, PhysicsConfig, add_hologram_args, add_physics_args,
+                      apply_holograms, check_nf, config_from_args, fraunhofer_raw,
+                      geometry, group_name, hologram_from_args, image_metrics,
+                      make_aperture, new_output, postprocess, split_ids,
+                      standard_apertures, write_json)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -324,7 +325,7 @@ def _plot_glass_check(config, glass, shapes, rng, path):
 # ============================================================
 # 4. 生成数据
 # ============================================================
-def generate(config, glass, nf_values, samples, seed, out, save_clean=False):
+def generate(config, glass, nf_values, samples, seed, out, save_clean=False, hologram=None):
     rng = np.random.RandomState(seed)
     strategies = [STRATEGIES[i % len(STRATEGIES)] for i in range(samples)]
     rng.shuffle(strategies)
@@ -339,6 +340,16 @@ def generate(config, glass, nf_values, samples, seed, out, save_clean=False):
         if (i + 1) % max(1, samples // 10) == 0:
             print(f"  光阑 {i + 1}/{samples}", flush=True)
     apertures.flush()
+
+    # 混入「设计产物」分布（密集干涉条纹），独立 RNG，不影响光阑/相位屏序列
+    hologram_ids = []
+    if hologram:
+        rng_h = np.random.RandomState(seed + hologram["seed_offset"])
+        hologram_ids = apply_holograms(apertures, rng_h, config.grid, samples,
+                                       hologram["fraction"], hologram["mode"], hologram["fill"])
+        apertures.flush()
+        print(f"  混入 {len(hologram_ids)} 个密集条纹掩模"
+              f"（{len(hologram_ids) / samples * 100:.0f}%，mode={hologram['mode']}）", flush=True)
 
     # 相位屏用独立 RNG：光阑序列与 v1 完全一致。
     glass_rng = np.random.RandomState(seed + GLASS_SEED_OFFSET)
@@ -402,6 +413,12 @@ def generate(config, glass, nf_values, samples, seed, out, save_clean=False):
                        "逐样本随机时为 (samples, grid, grid)，--glass-shared 时是整个数据集"
                        "共用一块 (grid, grid)。"),
         "samples": samples, "seed": seed,
+        "hologram": ({"fraction": hologram["fraction"], "mode": hologram["mode"],
+                      "fill": list(hologram["fill"]), "ids": hologram_ids}
+                     if hologram else None),
+        "hologram_note": ("这些编号的样本被替换成设计产物风格的密集条纹掩模"
+                          "（与 train.py 无关，只是让训练分布覆盖 design.py 查询的那片区域）。"
+                          if hologram else "未混入密集条纹掩模。"),
         "groups": [{"name": e["name"], "nf": e["nf"], "label_method": e["label_method"],
                     "has_clean": e["clean"] is not None} for e in groups],
         "split_counts": {k: len(v) for k, v in splits.items()},
@@ -468,6 +485,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     add_physics_args(parser)
     add_glass_args(parser)
+    add_hologram_args(parser)
     parser.add_argument("--samples", type=int, default=1000, help="原始光阑数，七组共用")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", default="data/v2")
@@ -509,11 +527,14 @@ def main():
         write_json(out / "validation.json", {"skipped": True})
 
     manifest = generate(config, glass, nf_values, args.samples, args.seed, out,
-                        save_clean=args.save_clean)
+                        save_clean=args.save_clean, hologram=hologram_from_args(args))
     print(f"完成：{out}")
     print(f"划分：{manifest['split_counts']}")
     print(f"毛玻璃：相关长度 {glass.correlation_m*1e6:.0f} µm, rms {glass.rms_rad:g} rad, "
           f"{'共用一块' if glass.shared else '逐样本随机'}")
+    if manifest.get("hologram"):
+        print(f"密集条纹掩模：{len(manifest['hologram']['ids'])} 个 "
+              f"（mode={manifest['hologram']['mode']}）")
 
 
 if __name__ == "__main__":

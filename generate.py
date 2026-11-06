@@ -464,6 +464,82 @@ def split_ids(strategies, seed=42):
 
 
 # ============================================================
+# 2b. 混入「设计产物」分布：密集干涉条纹掩模
+# ============================================================
+HOLOGRAM_SEED_OFFSET = 2000003
+
+
+def make_hologram(rng, grid=256, mode="both", fill_range=(0.30, 0.55)):
+    """生成一块**设计产物风格**的密集掩模（随机全息 / 干涉条纹）。
+
+    `design.py` 优化出来的光阑是填满视场的高频条纹（fill 0.3~0.55、周期几个像素），
+    和 v1 的八类几何形状完全不是一个分布。网络在训练集上没见过的这类输入上预测会偏，
+    而设计优化器恰恰会往这里跑；把这种掩模混进训练集，才能在"被查询的那片区域"变准。
+
+    mode: "binary" 二值；"gray" 连续透过率；"both" 各占一半（随机）。
+    """
+    yy, xx = np.mgrid[:grid, :grid].astype(np.float64)
+    field = np.zeros((grid, grid), np.float64)
+    for _ in range(rng.randint(2, 5)):
+        theta = rng.uniform(0, np.pi)
+        period = rng.uniform(3.0, 14.0)                      # 条纹周期（像素）
+        phase = rng.uniform(0, 2 * np.pi)
+        weight = rng.uniform(0.4, 1.0)
+        field += weight * np.cos(
+            2 * np.pi * (np.cos(theta) * xx + np.sin(theta) * yy) / period + phase)
+    envelope = np.zeros((grid, grid), np.float64)
+    for _ in range(rng.randint(1, 4)):
+        cy, cx = rng.uniform(0, grid, 2)
+        width = rng.uniform(grid / 8, grid / 2)
+        envelope += rng.uniform(-1, 1) * np.exp(
+            -((yy - cy)**2 + (xx - cx)**2) / (2 * width * width))
+    field = field / max(field.std(), 1e-9) + 0.6 * envelope / max(envelope.std(), 1e-9)
+
+    fill = rng.uniform(*fill_range)
+    threshold = np.quantile(field, 1.0 - fill)
+    if mode == "gray" or (mode == "both" and rng.rand() < 0.5):
+        return (1.0 / (1.0 + np.exp(-1.5 * (field - threshold)))).astype(np.float32)
+    return (field > threshold).astype(np.float32)
+
+
+def apply_holograms(apertures, rng, grid, samples, fraction, mode, fill_range):
+    """把 fraction 比例的样本替换成密集掩模；返回被替换的编号。
+
+    用独立 RNG，且在自然光阑全部写完之后才替换 —— 因此 `--hologram-fraction 0`
+    时（以及被替换之外的样本）仍与 v1 同 seed 逐位相同。
+    """
+    count = int(round(fraction * samples))
+    if count <= 0:
+        return []
+    ids = np.sort(rng.choice(samples, size=min(count, samples), replace=False))
+    for i in ids:
+        apertures[int(i)] = make_hologram(rng, grid, mode, fill_range)
+    return ids.tolist()
+
+
+def hologram_from_args(args):
+    fraction = float(getattr(args, "hologram_fraction", 0.0) or 0.0)
+    if not 0 <= fraction < 1:
+        raise ValueError("--hologram-fraction 必须在 [0,1) 内")
+    if fraction == 0:
+        return None
+    fill = tuple(float(x) for x in getattr(args, "hologram_fill", (0.30, 0.55)))
+    if len(fill) != 2 or not 0 < fill[0] < fill[1] < 1:
+        raise ValueError("--hologram-fill 需要两个递增的数，且在 (0,1) 内")
+    return {"fraction": fraction, "mode": getattr(args, "hologram_mode", "both"),
+            "fill": fill, "seed_offset": HOLOGRAM_SEED_OFFSET}
+
+
+def add_hologram_args(parser):
+    parser.add_argument("--hologram-fraction", type=float, default=0.0,
+                        help="把这一比例的样本替换成设计产物风格的密集条纹掩模（0 = 不混）")
+    parser.add_argument("--hologram-mode", choices=("binary", "gray", "both"), default="both",
+                        help="密集掩模的形式：二值 / 连续透过率 / 各一半")
+    parser.add_argument("--hologram-fill", type=float, nargs=2, default=(0.30, 0.55),
+                        metavar=("LO", "HI"), help="密集掩模的平均透过率范围")
+
+
+# ============================================================
 # 3. 生成前传播验证
 # ============================================================
 def standard_apertures(n):
@@ -587,7 +663,7 @@ def config_from_args(args):
                          oversample=args.oversample, pad_factor=args.pad_factor)
 
 
-def generate(config, nf_values, samples, seed, out):
+def generate(config, nf_values, samples, seed, out, hologram=None):
     rng = np.random.RandomState(seed)
     strategies = [STRATEGIES[i % len(STRATEGIES)] for i in range(samples)]
     rng.shuffle(strategies)
@@ -602,6 +678,17 @@ def generate(config, nf_values, samples, seed, out):
         if (i + 1) % max(1, samples // 10) == 0:
             print(f"  光阑 {i + 1}/{samples}", flush=True)
     apertures.flush()
+
+    # 混入「设计产物」分布（密集干涉条纹）；用独立 RNG，不改变自然光阑的生成序列
+    hologram_ids = []
+    if hologram:
+        rng_h = np.random.RandomState(seed + hologram["seed_offset"])
+        hologram_ids = apply_holograms(apertures, rng_h, config.grid, samples,
+                                       hologram["fraction"], hologram["mode"], hologram["fill"])
+        apertures.flush()
+        print(f"  混入 {len(hologram_ids)} 个密集条纹掩模"
+              f"（{len(hologram_ids) / samples * 100:.0f}%，mode={hologram['mode']}）", flush=True)
+
     np.savez(out / "splits.npz",
              **{k: np.asarray(v, dtype=np.int64) for k, v in splits.items()})
 
@@ -628,6 +715,13 @@ def generate(config, nf_values, samples, seed, out):
     manifest = {"schema": 2, "status": "complete", "config": config.to_dict(),
                 "samples": samples, "seed": seed, "groups": groups,
                 "split_counts": {k: len(v) for k, v in splits.items()},
+                "hologram": ({"fraction": hologram["fraction"], "mode": hologram["mode"],
+                              "fill": list(hologram["fill"]), "ids": hologram_ids}
+                             if hologram else None),
+                "hologram_note": ("这些编号的样本被替换成设计产物风格的密集条纹掩模，"
+                                  "其余样本与同 seed 的 v1 逐位相同。注意 evaluate.py 的 "
+                                  "diversity.png 仍按八类几何策略取样本，这些编号会显示成"
+                                  "对应的策略名（仅影响那张图的标签）。"),
                 "D_definition": "非零像素包围盒较长跨度（含孔间距）；z=D^2/(lambda*NF)",
                 "detector_grid": "x_j=(j-N/2)*lambda*z/(N*input_pitch)，随样本变化",
                 "note": "七组共享同一批光阑与同一 train/val/test 划分。"}
@@ -657,6 +751,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     add_physics_args(parser)
+    add_hologram_args(parser)
     parser.add_argument("--samples", type=int, default=1000,
                         help="原始光阑数，七组共用")
     parser.add_argument("--seed", type=int, default=42)
@@ -681,7 +776,8 @@ def main():
         print("已跳过传播验证", flush=True)
         write_json(out / "validation.json", {"skipped": True})
 
-    manifest = generate(config, nf_values, args.samples, args.seed, out)
+    manifest = generate(config, nf_values, args.samples, args.seed, out,
+                        hologram=hologram_from_args(args))
     print(f"完成：{out}")
     print(f"划分：{manifest['split_counts']}")
 

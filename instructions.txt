@@ -88,6 +88,14 @@ python generate_v2.py --samples 1000 --out data/v2_random
 # 2.8 训练完看指标
 Get-Content runs\v2_weak\nf_1\physics\selection.json
 
+# 2.9 混入"设计产物"分布（推荐：让网络在 design 查询的密集条纹掩模上也准）
+python generate_v2.py --samples 1000 --nf 1 --glass-shared --glass-preset weak --hologram-fraction 0.2 --out data/v2_nf1_holo
+python train.py --data data/v2_nf1_holo --groups 1 --propagator hybrid --lambda-freq 0.02 --epochs 50 --out runs/v2_nf1_holo
+python design.py --checkpoint runs/v2_nf1_holo/nf_1/physics/best_model.pt --char Z --check-glass data/v2_nf1_holo/glass_phase.npy --out design_runs/net_holo_Z
+python design.py --checkpoint runs/v2_nf1_holo/nf_1/physics/best_model.pt --target inputs/ZJU.jpg --check-glass data/v2_nf1_holo/glass_phase.npy --out design_runs/net_holo_ZJU
+# 纯 v1（无毛玻璃）也可以混：
+python generate.py --samples 1000 --hologram-fraction 0.2 --out data/v1_holo
+
 
 ================================================================
  3. 反设计（design.py：正向 = 训练好的 physics+残差 网络）
@@ -166,6 +174,9 @@ python evaluate.py --data data/demo --out results/demo
   --nf 0.01 0.1 1 ...    自定义 NF 组
   --seed N               随机种子，默认 42
   --skip-validation      跳过生成前验证（不建议）
+  --hologram-fraction F  把比例 F 的样本换成设计产物风格的密集条纹掩模（0 = 不混）
+  --hologram-mode M      binary / gray / both（默认 both）
+  --hologram-fill LO HI  密集掩模的平均透过率范围（默认 0.30 0.55）
 
 【generate_v2.py】（在上面基础上增加）
   --glass-shared                 整份数据共用一块玻璃（主用例）
@@ -174,6 +185,7 @@ python evaluate.py --data data/demo --out results/demo
   --glass-rms-rad F              相位起伏 rms（rad）
   --save-clean                   额外保存无玻璃图样
   --nf 1                         只生成指定 NF 组
+  --hologram-fraction / -mode / -fill   同上，混入设计产物分布
 
 【train.py】
   --data DIR             数据目录
