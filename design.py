@@ -417,76 +417,131 @@ def check_through_glass(scene, aperture, phase, config, z_m):
     return result, intensity
 
 
-def render_net(path, scene, aperture, intensity, metrics_, history, tag, check=None):
+def render_net(path, scene, aperture, intensity, metrics_, history, tag, check=None,
+               check_metrics=None):
+    """comparison 图。
+
+    给了 --check-glass 时会多出两栏，把「网络推理的图样」和「真实毛玻璃 φ 下的
+    物理计算结果」并排放在一起，再给一张两者的差：
+        ② 网络推理（训练时不知道 φ）   ③ 物理计算（真实 φ）   ④ 两者之差
+    没有 --check-glass 时退回 2×3 的老版式。
+    """
     r0, r1, c0, c1 = scene.roi
     roi_peak = max(float(intensity[r0:r1, c0:c1].max()), 1e-12)
     is_phase = scene.modulation == "phase"
-    fig = plt.figure(figsize=(17.4, 8.6))
-    gs = fig.add_gridspec(2, 3, left=0.033, right=0.975, top=0.85, bottom=0.10,
-                          wspace=0.17, hspace=0.22)
+    has_check = check is not None
+    ncols = 4 if has_check else 3
+    fig, axes = plt.subplots(2, ncols, figsize=(4.8 * ncols, 8.8), squeeze=False)
 
-    ax = fig.add_subplot(gs[0, 0])
+    def panel(ax, value, cmap, title, vmin=None, vmax=None):
+        ax.imshow(value, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
+        ax.set_title(title, fontsize=11)
+        ax.axis("off")
+
+    # ① 目标
+    ax = axes[0, 0]
     ax.imshow(scene.canvas, cmap="inferno", vmin=0, vmax=1, interpolation="nearest")
     ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
                            fill=False, ec="#38e0ff", lw=1.6, ls="--"))
-    ax.set_title("① 目标图样（蓝框 = ROI）", fontsize=12)
+    ax.set_title("① 目标图样（蓝框 = ROI）", fontsize=11)
+    ax.axis("off")
 
-    ax = fig.add_subplot(gs[0, 1])
-    ax.imshow(display(intensity[r0:r1, c0:c1], roi_peak), cmap="inferno", vmin=0, vmax=1,
-              interpolation="nearest")
-    ax.set_title(f"② 网络预测的图样（ROI）  corr={metrics_['corr_amplitude']:.3f}", fontsize=12)
+    # ② 网络推理
+    panel(axes[0, 1], display(intensity[r0:r1, c0:c1], roi_peak), "inferno",
+          "② 网络推理（训练时不知道 φ）\n"
+          f"corr={metrics_['corr_amplitude']:.3f}  MAE={metrics_['mae_amplitude']:.3f}", 0, 1)
 
-    ax = fig.add_subplot(gs[0, 2])
+    if has_check:
+        # ③ 物理计算（真实毛玻璃 φ）
+        rc_peak = max(float(check[r0:r1, c0:c1].max()), 1e-12)
+        panel(axes[0, 2], display(check[r0:r1, c0:c1], rc_peak), "inferno",
+              "③ 物理计算（真实毛玻璃 φ）\n"
+              f"corr={check_metrics['corr_amplitude']:.3f}  "
+              f"MAE={check_metrics['mae_amplitude']:.3f}", 0, 1)
+        # ④ 网络 − 物理（两者都按目标 L2 归一化到同一尺度）
+        net_amp = roi_amplitude(scene, intensity)
+        true_amp = roi_amplitude(scene, check)
+        difference = net_amp - true_amp
+        # 用 99% 分位数定色标，避免个别尖峰把整幅图压成白色
+        limit = max(float(np.percentile(np.abs(difference), 99)), 1e-6)
+        image = axes[0, 3].imshow(difference, cmap="RdBu_r", vmin=-limit, vmax=limit,
+                                  interpolation="nearest")
+        axes[0, 3].set_title(f"④ 网络推理 − 物理真实\n|Δ| 均值={np.abs(difference).mean():.4f}",
+                             fontsize=11)
+        axes[0, 3].axis("off")
+        fig.colorbar(image, ax=axes[0, 3], fraction=0.046, pad=0.03)
+
+    tag_aperture = "⑤" if has_check else "③"
+    tag_full = "⑥" if has_check else "④"
+
+    # ⑤/③ 光阑
+    ax = axes[1, 0] if has_check else axes[0, 2]
     if is_phase:
         ax.imshow(np.angle(aperture), cmap="twilight", interpolation="nearest")
-        ax.set_title("③ 反设计光阑（相位）", fontsize=12)
+        ax.set_title(f"{tag_aperture} 反设计光阑（相位）", fontsize=11)
     else:
         ax.imshow(np.real(aperture), cmap="gray", vmin=0, vmax=1, interpolation="nearest")
-        ax.set_title("③ 反设计光阑（白 = 透光）", fontsize=12)
+        ax.set_title(f"{tag_aperture} 反设计光阑（白 = 透光）", fontsize=11)
+    ax.axis("off")
 
-    ax = fig.add_subplot(gs[1, 0])
+    # ⑥/④ 全视场（网络）
+    ax = axes[1, 1] if has_check else axes[1, 0]
     ax.imshow(display(intensity, roi_peak), cmap="inferno", vmin=0, vmax=1,
               interpolation="nearest")
     ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
                            fill=False, ec="#38e0ff", lw=1.6))
-    ax.set_title("④ 全视场（网络预测，log 显示）", fontsize=12)
+    ax.set_title(f"{tag_full} 全视场（网络推理，log 显示）", fontsize=11)
+    ax.axis("off")
 
-    ax = fig.add_subplot(gs[1, 1])
-    if check is None:
+    if not has_check:
+        # ⑤ |目标 − 网络推理|
+        ax = axes[1, 1]
         error = np.abs(scene.target - roi_amplitude(scene, intensity))
-        title = "⑤ |目标 − 网络预测|（振幅）"
-    else:
-        error = np.abs(scene.target - roi_amplitude(scene, check))
-        title = f"⑤ |目标 − 真实模型|（振幅）  corr={metrics_['check_corr']:.3f}"
-    image = ax.imshow(error, cmap="magma", interpolation="nearest",
-                      vmin=0, vmax=max(0.05, float(error.max())))
-    ax.set_title(title, fontsize=12)
-    fig.colorbar(image, ax=ax, fraction=0.04, pad=0.02)
+        image = ax.imshow(error, cmap="magma", interpolation="nearest", vmin=0,
+                          vmax=max(0.05, float(np.percentile(error, 99))))
+        ax.set_title("⑤ |目标 − 网络推理|（振幅）", fontsize=11)
+        ax.axis("off")
+        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.03)
 
-    ax = fig.add_subplot(gs[1, 2])
+    if has_check:
+        # ⑦ 全视场（物理）—— 和 ⑥ 一样按 ROI 峰值归一化，否则中心的零级会把整幅压黑
+        ax = axes[1, 2]
+        ax.imshow(display(check, rc_peak), cmap="inferno", vmin=0, vmax=1,
+                  interpolation="nearest")
+        ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
+                               fill=False, ec="#38e0ff", lw=1.6))
+        ax.set_title("⑦ 全视场（物理计算，log 显示）", fontsize=11)
+        ax.axis("off")
+        ax = axes[1, 3]
+    else:
+        ax = axes[1, 2]
+
     steps = np.asarray(history["step"])
     ax.semilogy(steps, history["data"], color="#d94801", lw=1.6, label="ROI 拟合误差")
     ax.semilogy(steps, history["outside"], color="#4c78a8", lw=1.2, ls="--", label="ROI 外能量")
     ax.set_xlabel("迭代步", fontsize=9)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8, frameon=False)
-    ax.set_title("⑥ 收敛曲线", fontsize=12)
+    ax.set_title("⑧ 收敛曲线" if has_check else "⑥ 收敛曲线", fontsize=11)
+    ax.set_xticks([])
+    ax.set_yticks([])
 
-    for axes in fig.axes:
-        axes.set_xticks([])
-        axes.set_yticks([])
-    fig.text(0.033, 0.945, tag, fontsize=13, fontweight="bold", ha="left")
-    line = (f"网络预测 corr = {metrics_['corr_amplitude']:.3f}    "
+    fig.text(0.033, 0.955, tag, fontsize=13, fontweight="bold", ha="left")
+    line = (f"网络推理 corr = {metrics_['corr_amplitude']:.3f}    "
             f"MAE = {metrics_['mae_amplitude']:.3f}    "
             f"ROI 能量占比 = {metrics_['roi_energy_fraction']*100:.1f}%")
-    if check is not None:
-        line += (f"      |      真实模型 corr = {metrics_['check_corr']:.3f}    "
-                 f"MAE = {metrics_['check_mae']:.3f}")
-    fig.text(0.033, 0.915, line, fontsize=9.5, color="#444444", ha="left")
+    if has_check:
+        line += (f"      |      物理真实 corr = {check_metrics['corr_amplitude']:.3f}    "
+                 f"MAE = {check_metrics['mae_amplitude']:.3f}    "
+                 f"ROI 峰值(物理单位) = {rc_peak:.2e}")
+    fig.text(0.033, 0.925, line, fontsize=9.5, color="#444444", ha="left")
     fig.text(0.033, 0.030,
-             "正向是训练出来的 physics+残差 网络；网络只在训练分布附近可信，"
-             "设计会把光阑推出分布，所以务必用 --check-glass 复核。",
+             ("② 是训练出来的网络对这块光阑的推理（训练时没见过 φ），③ 是用真实毛玻璃相位做的物理计算；"
+              "两者之差就是网络代理误差。") if has_check else
+             ("没有给 --check-glass，所以这里只有网络自己的推理；"
+              "要看真实毛玻璃下长什么样，加 --check-glass data/.../glass_phase.npy。"),
              fontsize=8.8, color="#666666", ha="left")
+    fig.tight_layout(rect=(0, 0.05, 1, 0.90))
     fig.savefig(path, dpi=150, facecolor="white")
     plt.close(fig)
 
@@ -593,7 +648,7 @@ def main(argv=None):
                                            best["history"]["outside"]]))
     render_net(out / "comparison.png", scene, aperture, intensity, metrics_, best["history"],
                f"{scene.source} → {scene.modulation} 光阑（正向 = 训练好的 physics+残差 网络）",
-               check_intensity)
+               check_intensity, check_metrics)
 
     result = {"stage": "net_design", "checkpoint": str(args.checkpoint),
               "target": scene.source, "modulation": scene.modulation, "grid": scene.grid,

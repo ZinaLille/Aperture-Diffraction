@@ -6,7 +6,7 @@
 - **反设计**：`design.py` 用训练好的 physics+残差 网络当正向，解出一块能产生目标图样的光阑；
 - **v2（毛玻璃）**：`generate_v2.py` 在光阑后面加一块随机相位毛玻璃造数据，`train.py` / `evaluate.py` 原样复用。
 
-> 所有命令的速查版（PowerShell 单行、可直接复制）见 [指令大全.txt](指令大全.txt)。
+> 所有命令的速查版（PowerShell 单行、可直接复制）见 [instructions.txt](instructions.txt)。
 
 ## 依赖
 
@@ -120,7 +120,10 @@ python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z --out 
 
   `--check-glass` 给**全 0 的相位屏**就是"无玻璃"复核；真实实验里没有 φ，这一步用实测图样对比代替。
 - `--modulation gray` 是连续透过率（拟合上限），`--modulation phase` 是纯相位光阑；
-- 输出六联图：目标 / 网络预测 / 光阑 / 全视场 / |目标−真实模型| / 收敛曲线；
+- 输出 `comparison.png`：给了 `--check-glass` 时是 **8 联图**——
+  ① 目标　② **网络推理的图样**（训练时不知道 φ）　③ **物理计算的真实图样**（用真实毛玻璃 φ 算）
+  ④ 两者之差　⑤ 光阑　⑥ 全视场（网络）　⑦ 全视场（物理）　⑧ 收敛曲线；
+  没给 `--check-glass` 时退回 6 联图（只剩网络侧）；
 - 输出：`target.npy` `aperture.npy` `aperture.png` `pattern_pred.npy` `pattern_fit.png` `pattern_roi.png`
   `target_roi.png` `history.npy` `comparison.png` `result.json`
   （给了 `--check-glass` 时还有 `pattern_check_intensity.npy` / `pattern_check_roi.png`）。
@@ -269,7 +272,7 @@ Z 认得出，但网络会高估 0.13–0.22，所以**必须**用 `--check-glas
 ```text
 Aperture-Diffraction/
 ├── README.md
-├── 指令大全.txt         # 所有命令的 PowerShell 速查（单行、可直接复制）
+├── instructions.txt     # 所有命令的 PowerShell 速查（单行、可直接复制）
 ├── .gitignore
 ├── generate.py          # 按 NF 生成数据 + 传播验证
 ├── train.py             # 模型、损失、训练与曲线/样例图
@@ -305,4 +308,4 @@ python evaluate.py --data data/demo --out results/demo
 ```
 
 小网格 / 少样本只用于检查流程，不能作为模型性能结论。
-要"能看的指标"，用 [指令大全.txt](指令大全.txt) 第 4 节的 NF=1 可用版（600 光阑、40 epoch）或毛玻璃版。
+要"能看的指标"，用 [instructions.txt](instructions.txt) 第 4 节的 NF=1 可用版（600 光阑、40 epoch）或毛玻璃版。

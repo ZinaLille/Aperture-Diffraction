@@ -228,9 +228,13 @@ runs/v1/nf_1/physics/        权重与训练记录
 results/eval_v1/             评估图表 + summary.csv + metrics.txt
 design_runs/net_Z/           design.py 输出
     aperture.npy / aperture.png        反设计出的光阑
-    pattern_pred.npy                    网络预测的图样
-    pattern_check_intensity.npy         真实模型复核的图样（给了 --check-glass 才有）
-    comparison.png                      六联图
+    pattern_pred.npy                    网络推理的图样
+    pattern_check_intensity.npy         物理计算（真实毛玻璃 φ）的图样（给了 --check-glass 才有）
+    comparison.png                      对比图：
+                                          有 --check-glass = 8 联图
+                                            ① 目标  ② 网络推理  ③ 物理真实  ④ 两者之差
+                                            ⑤ 光阑  ⑥ 全视场(网络)  ⑦ 全视场(物理)  ⑧ 收敛曲线
+                                          无 --check-glass = 6 联图（只有网络侧）
     result.json                         指标（metrics / check_glass）
 
 
