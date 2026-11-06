@@ -1,0 +1,295 @@
+================================================================
+ Aperture-Diffraction  指令集（Windows PowerShell）
+================================================================
+
+用法说明
+  - 下面每条命令都是**单行**，复制后直接回车即可（PowerShell 不支持 bash 的 "\" 续行）。
+  - 所有命令都在项目根目录执行；先跑一次第 0 节的 cd。
+  - 所有 --out / --data 目录：**输出目录必须不存在**，重跑请换名字（或先删掉）。
+  - 中文输出乱码时，先跑：[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+目录
+  0. 进入项目 / 环境检查
+  1. v1 全流程（数据 -> 训练 -> 评估）
+  2. v2 毛玻璃全流程（数据 -> 训练 -> 评估）
+  3. 反设计（design.py，正向 = 训练好的网络）
+  4. NF=1 快速跑通（最短 / 可用 / 毛玻璃版 / 64 网格冒烟）
+  5. 参数速查
+  6. 输出目录说明
+  7. PowerShell 常用小命令
+  8. 常见报错对照
+
+
+================================================================
+ 0. 进入项目 / 环境检查
+================================================================
+
+cd D:\Physics_Project\Aperture-Diffraction
+
+python --version
+
+# 检查依赖（应打印版本号和 True/False）
+python -c "import numpy, torch, matplotlib; print(numpy.__version__, torch.__version__, torch.cuda.is_available())"
+
+# 缺什么装什么
+python -m pip install numpy matplotlib torch
+
+
+================================================================
+ 1. v1 全流程（无毛玻璃）
+================================================================
+
+# 1.1 生成 7 组菲涅耳数的数据（1000 个光阑，约 30~40 分钟）
+python generate.py --samples 1000 --out data/v1
+
+# 1.2 训练（7 组 physics，默认 50 epoch，约 1~1.5 小时）
+python train.py --data data/v1 --out runs/v1
+
+# 1.3 评估 + 出全部图表
+python evaluate.py --data data/v1 --run runs/v1 --out results/eval_v1
+
+# 只看单组（快）
+python train.py --data data/v1 --groups 1 --out runs/nf1
+python evaluate.py --data data/v1 --run runs/nf1 --out results/eval_nf1
+
+# 同时训纯 U-Net 对照（会多出 baseline/ 目录）
+python train.py --data data/v1 --models physics baseline --out runs/v1_both
+
+# 换物理层（NF>=0.1 用角谱）
+python train.py --data data/v1 --groups 3 5 --models physics --propagator asm --epochs 10 --batch-size 4 --out runs/asm_v1
+
+
+================================================================
+ 2. v2 全流程（一块固定的毛玻璃）
+================================================================
+# 说明：毛玻璃相位未知，但整份数据共用同一块；train / evaluate 与 v1 完全一样。
+
+# 2.1 生成数据：一块固定玻璃，弱玻璃（最接近"毛玻璃不太强"的场景）
+python generate_v2.py --samples 1000 --glass-shared --glass-preset weak --out data/v2_weak
+
+# 2.2 训练（注意两个 v1 已有的 flag：hybrid 与 lambda-freq 0.02）
+python train.py --data data/v2_weak --propagator hybrid --lambda-freq 0.02 --out runs/v2_weak
+
+# 2.3 评估
+python evaluate.py --data data/v2_weak --run runs/v2_weak --out results/eval_v2_weak
+
+# 2.4 换玻璃强弱（weak / moderate / strong / groundglass）
+python generate_v2.py --samples 1000 --glass-shared --glass-preset moderate --out data/v2_mod
+
+# 2.5 按实际玻璃给物理参数（相关长度 µm、相位 rms rad）
+python generate_v2.py --samples 1000 --glass-shared --glass-correlation-um 600 --glass-rms-rad 0.5 --out data/v2_custom
+
+# 2.6 只要一组 NF（快，约 5 分钟）
+python generate_v2.py --samples 600 --nf 1 --glass-shared --glass-preset weak --out data/v2_nf1
+
+# 2.7 逐样本换玻璃（对照用，不是"一块玻璃"的场景）
+python generate_v2.py --samples 1000 --out data/v2_random
+
+# 2.8 训练完看指标
+Get-Content runs\v2_weak\nf_1\physics\selection.json
+
+
+================================================================
+ 3. 反设计（design.py：正向 = 训练好的 physics+残差 网络）
+================================================================
+# 前提：先用 train.py 训出 best_model.pt；--char 或 --target 指定想要的图样。
+# 强烈建议加 --check-glass（用真实解析模型复核），否则看到的只是网络自己的说法。
+
+# 3.1 无玻璃：用 v1 的模型；--check-glass 需要一块全 0 相位屏
+python -c "import numpy as np; np.save('zero_phase.npy', np.zeros((256,256), np.float32))"
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z --check-glass zero_phase.npy --out design_runs/net_clean_Z
+
+# 3.2 有毛玻璃：用 v2 的模型 + 真实相位屏复核
+#     （--glass-shared 的数据集里 glass_phase.npy 正好是 (256,256)）
+python design.py --checkpoint runs/v2_weak/nf_1/physics/best_model.pt --char Z --check-glass data/v2_weak/glass_phase.npy --out design_runs/net_Z
+
+# 3.3 用自己的图片（放进 inputs/）
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --target inputs/star.png --out design_runs/star
+
+# 3.4 纯相位光阑
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z --modulation phase --out design_runs/Z_phase
+
+# 3.5 加步数 / 多 restart（更稳，但更慢）
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z --steps 2500 --restarts 3 --out design_runs/Z_long
+
+
+================================================================
+ 4. NF=1 快速跑通（最短 / 可用 / 毛玻璃版 / 64 网格冒烟）
+================================================================
+
+----------------------------------------------------------------
+ 4.1 最短：只确认四个脚本能串起来（约 3 分钟，指标无意义）
+----------------------------------------------------------------
+# 24 个光阑、只生成 NF=1、跳过传播验证
+python generate.py --samples 24 --nf 1 --skip-validation --out data/nf1_min
+python train.py --data data/nf1_min --groups 1 --base-ch 8 --batch-size 4 --epochs 5 --out runs/nf1_min
+python evaluate.py --data data/nf1_min --run runs/nf1_min --out results/eval_nf1_min
+python design.py --checkpoint runs/nf1_min/nf_1/physics/best_model.pt --char Z --steps 300 --restarts 1 --out design_runs/nf1_min
+# 注意：只有 8 个训练样本，残差只会加噪声，指标偏低是正常的，这一步只看"有没有报错"。
+
+----------------------------------------------------------------
+ 4.2 可用：NF=1，训练集够大，指标能看（约 10~15 分钟）
+----------------------------------------------------------------
+python generate.py --samples 600 --nf 1 --out data/nf1
+python train.py --data data/nf1 --groups 1 --propagator hybrid --epochs 40 --out runs/nf1
+python evaluate.py --data data/nf1 --run runs/nf1 --out results/eval_nf1
+python -c "import numpy as np; np.save('zero_phase.npy', np.zeros((256,256), np.float32))"
+python design.py --checkpoint runs/nf1/nf_1/physics/best_model.pt --char Z --check-glass zero_phase.npy --out design_runs/nf1
+
+----------------------------------------------------------------
+ 4.3 毛玻璃版：NF=1 + 一块固定弱玻璃（约 10~15 分钟）
+----------------------------------------------------------------
+python generate_v2.py --samples 600 --nf 1 --glass-shared --glass-preset weak --out data/v2_nf1
+python train.py --data data/v2_nf1 --groups 1 --propagator hybrid --lambda-freq 0.02 --epochs 40 --out runs/v2_nf1
+python evaluate.py --data data/v2_nf1 --run runs/v2_nf1 --out results/eval_v2_nf1
+python design.py --checkpoint runs/v2_nf1/nf_1/physics/best_model.pt --target inputs/ZJU.jpg --check-glass data/v2_nf1/glass_phase.npy --out design_runs/v2_nf1_ZJU
+----------------------------------------------------------------
+ 4.4 64×64 冒烟：更快，只验证代码路径（约 1 分钟）
+----------------------------------------------------------------
+python generate.py --grid 64 --samples 24 --out data/demo
+python train.py --data data/demo --base-ch 8 --batch-size 4 --epochs 1 --out runs/demo
+python evaluate.py --data data/demo --out results/demo
+
+# 小网格不能作为性能结论；要结论请用 4.2 / 4.3。
+
+
+================================================================
+ 5. 参数速查
+================================================================
+
+【generate.py】
+  --samples N            光阑数量（>=24，七组共用）
+  --grid N               网格，默认 256
+  --pitch-um F           像素间距，默认 10
+  --wavelength-nm F      波长，默认 532
+  --far-threshold F      远场/角谱切换点，默认 0.1
+  --nf 0.01 0.1 1 ...    自定义 NF 组
+  --seed N               随机种子，默认 42
+  --skip-validation      跳过生成前验证（不建议）
+
+【generate_v2.py】（在上面基础上增加）
+  --glass-shared                 整份数据共用一块玻璃（主用例）
+  --glass-preset NAME            weak / moderate / strong / groundglass
+  --glass-correlation-um F       相位相关长度（µm）
+  --glass-rms-rad F              相位起伏 rms（rad）
+  --save-clean                   额外保存无玻璃图样
+  --nf 1                         只生成指定 NF 组
+
+【train.py】
+  --data DIR             数据目录
+  --out DIR              输出目录（必须不存在）
+  --groups 1 3           只训练指定 NF
+  --models physics baseline
+  --propagator fraunhofer | asm | hybrid   （v2 建议 hybrid）
+  --epochs N             默认 50
+  --batch-size N         默认 16（显存不够就减半）
+  --base-ch N            默认 32（8 的倍数；小网格 demo 用 8）
+  --lr F                 默认 3e-4
+  --lambda-freq F        默认 0.1；v2 用 0.02
+  --lambda-ssim F        默认 0（开内置 SSIM）
+  --lambda-res F         默认 1e-3
+  --device auto|cpu|cuda
+
+【evaluate.py】
+  --data / --run / --out
+  --groups 1 3           只评估指定 NF
+  --split val|test       默认 test
+  --shape-nf F           极端形状/扫描用哪组 NF，默认 1
+  --diversity-per-strategy N
+
+【design.py】
+  --checkpoint PATH      必备，nf_*/physics/best_model.pt
+  --char Z               目标字符（单字符）
+  --target PATH          或者给图片/NPY
+  --modulation binary|gray|phase
+  --check-glass PATH     真实相位屏（全 0 的相位屏 = 无玻璃复核）
+  --steps N              默认 1500
+  --restarts N           默认 2
+  --target-size N        目标像素尺寸，默认 0.375×grid
+  --margin N             ROI 留白，默认 grid/32
+  --roi-mode auto|center 默认 auto（右上象限）
+  --z F                  传播距离(m)，默认由 NF 与整块掩模算出
+  --device auto|cpu|cuda
+
+
+================================================================
+ 6. 输出目录说明
+================================================================
+
+data/v1/                     v1 数据（apertures.npy / splits.npz / nf_*/patterns.npy / manifest.json）
+data/v2_weak/                v2 数据（多一个 glass_phase.npy；--glass-shared 时是 (256,256)）
+runs/v1/nf_1/physics/        权重与训练记录
+    best_model.pt            训练好的模型（design.py 要用它）
+    history.csv              逐 epoch 损失
+    selection.json           选优信息（best epoch / val l1 / test）
+    test_metrics.json        test 指标
+    loss_curve.png           损失曲线
+    train_result.png         样例图（光阑/物理层/预测/真值/误差）
+results/eval_v1/             评估图表 + summary.csv + metrics.txt
+design_runs/net_Z/           design.py 输出
+    aperture.npy / aperture.png        反设计出的光阑
+    pattern_pred.npy                    网络预测的图样
+    pattern_check_intensity.npy         真实模型复核的图样（给了 --check-glass 才有）
+    comparison.png                      六联图
+    result.json                         指标（metrics / check_glass）
+
+
+================================================================
+ 7. PowerShell 常用小命令
+================================================================
+
+# 看目录
+Get-ChildItem design_runs
+
+# 判断训练是否出到某一组
+Test-Path runs\v2\nf_1\physics\best_model.pt
+
+# 看某个模型的 test 指标
+Get-Content runs\v2\nf_1\physics\selection.json
+
+# 看整份数据的划分和玻璃参数
+Get-Content data\v2_weak\manifest.json
+
+# 重跑前删掉旧输出（确认路径再删！）
+Remove-Item -Recurse -Force design_runs\net_Z
+
+# 多行命令的三种写法（PowerShell 用反引号续行，不是 "\"）
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z --out design_runs/a
+python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z `
+    --out design_runs/a
+$c = @('design.py','--checkpoint','runs/v1/nf_1/physics/best_model.pt','--char','Z','--out','design_runs/a'); python @c
+
+
+================================================================
+ 8. 常见报错对照
+================================================================
+
+FileNotFoundError: ... best_model.pt
+  -> checkpoint 路径不存在：确认 NF 组和训练是否跑完（Test-Path runs\...\best_model.pt）
+
+FileNotFoundError / 数据不完整，请先运行 generate.py
+  -> --data 指错了，或数据没生成完（manifest.json 里 status 必须是 complete）
+
+输出目录已存在：xxx
+  -> 换个 --out 名字，或先 Remove-Item -Recurse -Force xxx
+
+RuntimeError: 当前环境没有可用的 CUDA
+  -> 加 --device cpu，或按 pytorch.org 装 CUDA 版
+
+CUDA out of memory
+  -> 减小 --batch-size（16 -> 8 -> 4）
+
+KeyError: 'stage' / 这不是 generate_v2.py 产生的数据集
+  -> v1 数据配了 v2 的参数，或反之
+
+checkpoint 属于 NF=...，与当前组 NF=... 不符
+  -> evaluate 的 --run 与 --data 不是同一组数据
+
+ModuleNotFoundError: No module named 'xxx'
+  -> python -m pip install xxx（本项目只需要 numpy / matplotlib / torch）
+
+中文全是乱码
+  -> 先执行：[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+     （或 $env:PYTHONIOENCODING='utf-8'）
+
+================================================================

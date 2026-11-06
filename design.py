@@ -1,40 +1,31 @@
-"""目标衍射图样 → 反设计光阑（计算全息 / 逆设计）。
+"""目标图样 -> 用训练好的 physics+残差 网络当正向，反推光阑（本仓库唯一的 design 脚本）。
 
-正向问题是「光阑 → 衍射图样」（`generate.py`），单图逆向是「图样 → 光阑」
-（`inverse.py`，要求恢复出**那个**真实光阑）。本脚本是第三种问题：
+正向不再是解析公式，而是你自己训练出来的 `physics` 模型（固定传播层 + 残差 U-Net）：
 
-    给定一张想要的远场图样（例如字母 Z），反设计出一块光阑，
-    使它的夫琅禾费衍射图样**就是**这张图。
+    光阑 A  →  网络(physics + 残差)  →  预测图样  →  与目标比较  →  反传更新 A
 
-光阑长什么样不做任何限制：解出来通常是一块干涉条纹状的二值掩模，
-看起来像二维码 / 全息图，这是正常的——它只需要在远场重建目标。
+网络是在「这套装置 + 这块毛玻璃」的数据上训出来的，所以它天然把玻璃（以及别的
+系统性偏差）算进了正向——不需要知道 φ，也不需要改任何网络代码。
 
-两种调制方式（`--modulation`）：
-
-- `binary`（默认）：二值振幅光阑，透过率 0/1，可打印/曝光加工。
-  实振幅光阑的远场强度必然共轭对称 `I(k) = I(-k)`，所以不对称的 Z
-  不可能单独出现在全视场正中央。做法是把目标放到**偏轴的一个象限**，
-  优化时只在该 ROI 内比对；中心对称位置会自动出现一个旋转 180° 的
-  孪生像（这是物理，不是误差）。只看 ROI（或挡掉其余区域）就得到单个 Z。
-- `gray`：连续透过率，拟合上限，需要灰阶曝光或半色调。
-- `phase`：纯相位光阑（`a = exp(iφ)`），复振幅不受共轭对称限制，
-  Z 可以落在光轴中心、没有孪生像；适合 SLM / 刻蚀相位片。
-
-损失（ROI 内，按 ROI 峰值归一化后的振幅）：
-
-    L = Σ_ROI (|F|/peak − T)² / Σ_ROI 1
-      + 0.02 · Σ_outside (|F|/peak)² / Σ_ROI 1     # 抑制 ROI 外杂散能量
-      + 0.002 · mean(a(1−a))                        # 二值化（仅振幅模式）
-      + 2 · (mean(a) − 0.4)²                        # 平均透过率，防止退化成全黑
-
-二值模式先连续优化，后 45% 步数用 STE 直接优化 0/1 掩模；保存的图样
-始终由**最终掩模**重新做一次 FFT 得到，不做任何“美化”。
+但要注意：网络只是在**训练分布附近**可信，而设计优化会主动把光阑推出那个分布。
+所以必须用 `--check-glass` 把设计好的光阑放回真实模型（玻璃 + 缩放角谱）复算一遍。
+不给 `--check-glass` 时，脚本会明确警告：屏幕上那个 corr 只是网络自己的说法。
 
 用法：
+    # 先 train.py 训练，得到 runs/.../nf_*/physics/best_model.pt
+    python design.py --checkpoint runs/v1/nf_1/physics/best_model.pt --char Z \
+        --out design_runs/net_Z
 
-    python design.py --char Z --out design_runs/letterZ
-    python design.py --target my_pattern.png --out design_runs/custom
-    python design.py --char Z --modulation phase --out design_runs/letterZ_phase
+    # 有毛玻璃数据时，把真实相位屏当复核模型
+    python design.py --checkpoint runs/v2_weak1/nf_1/physics/best_model.pt --char Z \
+        --check-glass data/v2_weak1/glass_phase.npy --out design_runs/net_Z
+
+    # 自己的目标图
+    python design.py --checkpoint ... --target inputs/star.png --out design_runs/net_star
+
+输出：target.npy / aperture.npy / aperture.png / pattern_pred.npy / pattern_fit.png /
+      pattern_roi.png / target_roi.png / history.npy / comparison.png / result.json
+      （给了 --check-glass 时还有 pattern_check_intensity.npy / pattern_check_roi.png）
 """
 
 from __future__ import annotations
@@ -59,16 +50,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
+from generate import PhysicsConfig
+from generate_v2 import field_after_glass, raw_intensity
+from train import ForwardModel
+
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial"]
 plt.rcParams["axes.unicode_minus"] = False
 
-DISPLAY_ALPHA = 100.0  # 与 generate.postprocess 的 log1p(alpha*I/peak) 一致
+DISPLAY_ALPHA = 100.0
 
 
-# ----------------------------------------------------------------------------
-# 1. 目标图样
-# ----------------------------------------------------------------------------
-
+# ============================================================================
+# 1. 目标图样与场景（与 v1 的 design 完全一致的约定）
+# ============================================================================
 def resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -86,13 +80,7 @@ def crop_content(arr: np.ndarray, thresh: float = 0.05) -> np.ndarray:
 
 def load_image(path: Path, invert: bool, auto_invert: bool = True,
                threshold: float | None = None) -> np.ndarray:
-    """读 PNG/JPG/BMP/WEBP/TIFF/NPY，返回 [0,1] 灰度 float32。
-
-    - 彩色图转灰度；带 alpha 的 PNG 把透明部分当黑底合成；
-    - 目标是「黑底亮图」，所以整幅中位亮度 > 0.5 视为白底黑图，自动反色
-      （`--invert` 强制反色，`--no-auto-invert` 关闭自动判断）；
-    - `--threshold` 把目标按亮度二值化成剪影（适合卡通/照片这类没有纯黑背景的图）。
-    """
+    """读 PNG/JPG/BMP/WEBP/TIFF/NPY，返回 [0,1] 灰度 float32（黑底亮图）。"""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"找不到目标图样：{path}")
@@ -107,7 +95,6 @@ def load_image(path: Path, invert: bool, auto_invert: bool = True,
         else:
             img = img.convert("L")
         arr = np.asarray(img, dtype=np.float32) / 255.0
-
     arr = np.clip(arr, 0, 1)
     if invert:
         arr = 1.0 - arr
@@ -180,13 +167,10 @@ class Scene:
 
 
 def build_scene(args) -> Scene:
-    grid = args.grid
-    size = args.target_size
-    margin = args.margin
+    grid, size, margin = args.grid, args.target_size, args.margin
     box = size + 2 * margin
     if box > grid // 2:
         raise ValueError("target_size + 2*margin 不能超过 grid/2（目标必须能装进一个象限）")
-
     if args.target is not None:
         img = fit_square(load_image(Path(args.target), args.invert, args.auto_invert,
                                     args.threshold), size)
@@ -194,16 +178,13 @@ def build_scene(args) -> Scene:
     else:
         img = glyph_image(args.char, size, args.font)
         source = f"char:{args.char}"
-
     if args.modulation == "phase" or args.roi_mode == "center":
         r0 = (grid - box) // 2
         c0 = (grid - box) // 2
     else:
-        # 右上象限：ROI 中心相对画布中心偏移 (+g/4, -g/4)
-        r0 = grid // 2 - box
+        r0 = grid // 2 - box          # 右上象限
         c0 = grid // 2
     roi = (r0, r0 + box, c0, c0 + box)
-
     canvas = np.zeros((grid, grid), np.float32)
     canvas[r0 + margin:r0 + margin + size, c0 + margin:c0 + margin + size] = img
     roi_target = np.zeros((box, box), np.float32)
@@ -213,12 +194,8 @@ def build_scene(args) -> Scene:
     return Scene(grid, roi, roi_target, img, canvas, mask, args.modulation, source)
 
 
-# ----------------------------------------------------------------------------
-# 2. 正向算子与优化
-# ----------------------------------------------------------------------------
-
 def forward(field: torch.Tensor) -> torch.Tensor:
-    """夫琅禾费衍射（unitariy FFT，只关心形状）。"""
+    """纯 FFT —— 只用于初始化时挑载频方向，不参与最终设计。"""
     return torch.fft.fftshift(
         torch.fft.fft2(torch.fft.ifftshift(field, dim=(-2, -1)), norm="ortho"), dim=(-2, -1))
 
@@ -241,7 +218,6 @@ def init_theta(scene: Scene, seed: int, device: torch.device) -> torch.Tensor:
     if scene.modulation == "phase":
         theta = torch.rand(n, n, generator=gen, device=device) * 2 * math.pi
         return theta.clone().requires_grad_(True)
-
     r0, r1, c0, c1 = scene.roi
     fy = (r0 + r1 - 1) / 2 - n / 2
     fx = (c0 + c1 - 1) / 2 - n / 2
@@ -249,101 +225,27 @@ def init_theta(scene: Scene, seed: int, device: torch.device) -> torch.Tensor:
     xx = torch.arange(n, device=device) - n // 2
     ramp = 2 * math.pi * (fx * xx[None, :] + fy * yy[:, None]) / n
     noise = torch.rand(n, n, generator=gen, device=device) * 2 * math.pi
-
-    # 载频方向取能让 ROI 先有能量的那个符号
-    best, best_e = None, -1.0
+    best, best_energy = None, -1.0
     for sign in (1.0, -1.0):
-        a0 = 0.5 + 0.5 * torch.cos(sign * ramp + noise)
-        energy = float((forward(a0).abs() ** 2 * torch.as_tensor(scene.mask, device=device)).sum())
-        if energy > best_e:
-            best, best_e = a0, energy
-    theta = torch.logit(best.clamp(1e-3, 1 - 1e-3))
-    return theta.clone().requires_grad_(True)
+        candidate = 0.5 + 0.5 * torch.cos(sign * ramp + noise)
+        energy = float((forward(candidate).abs() ** 2
+                        * torch.as_tensor(scene.mask, device=device)).sum())
+        if energy > best_energy:
+            best, best_energy = candidate, energy
+    return torch.logit(best.clamp(1e-3, 1 - 1e-3)).clone().requires_grad_(True)
 
 
 @dataclass
 class DesignConfig:
     steps: int = 1500
     lr: float = 0.05
-    hard_fraction: float = 0.55   # 之后切 STE 二值
+    hard_fraction: float = 0.55
     w_outside: float = 0.02
     w_binary: float = 0.002
-    w_area: float = 2.0           # 平均透过率软约束，防止解退化成全黑/全开
+    w_area: float = 2.0
     fill_target: float = 0.4
-    theta_clip: float = 5.0       # 防止 sigmoid 饱和后梯度消失
+    theta_clip: float = 5.0
 
-
-def optimize(scene: Scene, config: DesignConfig, seed: int, device: torch.device):
-    n = scene.grid
-    r0, r1, c0, c1 = scene.roi
-    target = torch.as_tensor(scene.target, device=device)
-    mask = torch.as_tensor(scene.mask, device=device)
-    roi_slice = (slice(r0, r1), slice(c0, c1))
-    roi_mask = mask[roi_slice]
-    target_norm = target.norm().clamp_min(1e-12)
-
-    theta = init_theta(scene, seed, device)
-    opt = torch.optim.Adam([theta], lr=config.lr)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, config.steps, eta_min=config.lr * 0.1)
-    history = {"step": [], "data": [], "outside": [], "binary": []}
-    t0 = time.time()
-
-    for step in range(config.steps):
-        frac = step / max(config.steps - 1, 1)
-        hard = scene.modulation == "binary" and frac >= config.hard_fraction
-        aperture = aperture_from_theta(theta, scene.modulation, hard, ste=hard)
-
-        amplitude = forward(aperture).abs()
-        roi_amp = amplitude[roi_slice]
-        # L2 归一化：让 ROI 内的场与目标同能量，损失只比较“形状”。
-        # 用峰值归一化时，稀疏目标会让优化一路把场压暗（峰值跟着掉、归一化又放大外部
-        # 能量），最后塌成全黑——线稿类目标必然踩到。
-        scale = (roi_amp.norm() / target_norm).clamp_min(1e-12)
-        norm = amplitude / scale
-        diff = norm[roi_slice] - target
-        data = (roi_mask * diff ** 2).sum() / roi_mask.sum()
-        outside = ((1 - mask) * norm ** 2).sum() / mask.sum()
-        loss = data + config.w_outside * outside
-        if scene.modulation != "phase":
-            real = aperture.real if torch.is_complex(aperture) else aperture
-            loss = loss + config.w_binary * (real * (1 - real)).mean()
-            # 数据项对整体透过率没有约束，用平均透过率把它钉在 fill_target 附近
-            # （二值全息通常 ~50%）。
-            loss = loss + config.w_area * (real.mean() - config.fill_target) ** 2
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        opt.step()
-        sched.step()
-        if scene.modulation != "phase":
-            with torch.no_grad():
-                theta.clamp_(-config.theta_clip, config.theta_clip)
-
-        if step % 25 == 0 or step == config.steps - 1:
-            history["step"].append(step)
-            history["data"].append(float(data.detach()))
-            history["outside"].append(float(outside.detach()))
-            history["binary"].append(float((aperture.real * (1 - aperture.real)).mean().detach()))
-
-    elapsed = time.time() - t0
-    with torch.no_grad():
-        aperture = aperture_from_theta(theta, scene.modulation,
-                                       hard=scene.modulation == "binary", ste=False)
-        amplitude = forward(aperture).abs()
-        scale = (amplitude[roi_slice].norm() / target_norm).clamp_min(1e-12)
-        diff = amplitude[roi_slice] / scale - target
-        score = float((roi_mask * diff ** 2).sum() / roi_mask.sum())
-    return {
-        "theta": theta.detach().cpu(),
-        "aperture": aperture.detach().cpu(),
-        "score": score,
-        "history": history,
-        "elapsed_s": elapsed,
-    }
-
-
-# ----------------------------------------------------------------------------
-# 3. 指标
-# ----------------------------------------------------------------------------
 
 def pearson(a: np.ndarray, b: np.ndarray) -> float:
     a = a.ravel().astype(np.float64)
@@ -354,67 +256,12 @@ def pearson(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def twin_origin(scene: Scene) -> tuple[int, int]:
-    """ROI 对跖区域的左上角：像素 j 的镜像为 (N-j) mod N。
-
-    N 为偶数时原点落在 (N/2, N/2) 像素上，镜像区与 ROI 同尺寸但相差
-    180° 旋转，所以取回后还要 flip 一次。
-    """
     n = scene.grid
     r0, r1, c0, c1 = scene.roi
     return int(n - r1 + 1), int(n - c1 + 1)
 
 
-def evaluate(scene: Scene, aperture: np.ndarray, device: torch.device) -> dict:
-    n = scene.grid
-    r0, r1, c0, c1 = scene.roi
-    if scene.modulation == "phase":
-        field = torch.as_tensor(aperture, device=device).to(torch.complex64)
-    else:
-        field = torch.as_tensor(aperture, device=device).real
-    with torch.no_grad():
-        amplitude = forward(field).abs().cpu().numpy()
-    intensity = amplitude ** 2
-
-    roi_amp = amplitude[r0:r1, c0:c1]
-    target = scene.target
-    # 与优化一致：按 L2 能量把拟合场缩到目标的总能量再比较，
-    # 这样 mae ≈ √score，且不会在拟合场接近 0 时被放大成假的高相关。
-    roi_norm = float(np.linalg.norm(roi_amp))
-    target_norm = float(np.linalg.norm(target))
-    degenerate = roi_norm < 1e-9
-    fit = np.zeros_like(roi_amp) if degenerate else roi_amp * (target_norm / roi_norm)
-
-    # 对跖区域：实光阑必须与 ROI 逐点镜像 I(j) = I((N-j) mod N)
-    tr0, tc0 = twin_origin(scene)
-    twin = intensity[tr0:tr0 + (r1 - r0), tc0:tc0 + (c1 - c0)][::-1, ::-1] / max(
-        intensity[r0:r1, c0:c1].max(), 1e-12)
-    roi_int = intensity[r0:r1, c0:c1] / max(intensity[r0:r1, c0:c1].max(), 1e-12)
-
-    total = float(intensity.sum())
-    return {
-        "roi": [int(v) for v in scene.roi],
-        "roi_size": int(r1 - r0),
-        "target_size": int(scene.glyph.shape[0]),
-        "roi_box": int(scene.target.shape[0]),
-        "peak_intensity": float(intensity[r0:r1, c0:c1].max()),
-        "degenerate": bool(degenerate),
-        "corr_amplitude": pearson(fit, target),
-        "mae_amplitude": float(np.abs(fit - target).mean()),
-        "corr_intensity": pearson(roi_int, target ** 2),
-        "corr_twin": pearson(twin, roi_int) if scene.modulation != "phase" else None,
-        "roi_energy_fraction": float(intensity[r0:r1, c0:c1].sum() / total),
-        "dc_energy_fraction": float(intensity[n // 2 - 1:n // 2 + 1, n // 2 - 1:n // 2 + 1].sum() / total),
-        "aperture_fill_fraction": float((aperture.real > 0.5).mean()) if scene.modulation != "phase" else 1.0,
-        "aperture_binary": bool(scene.modulation == "binary"),
-    }
-
-
-# ----------------------------------------------------------------------------
-# 4. 可视化
-# ----------------------------------------------------------------------------
-
 def display(intensity: np.ndarray, peak: float) -> np.ndarray:
-    """与 data/v1 标签一致的 log1p 显示，按给定峰值归一化。"""
     value = np.log1p(DISPLAY_ALPHA * intensity / max(peak, 1e-12))
     return value / math.log1p(DISPLAY_ALPHA)
 
@@ -426,137 +273,253 @@ def save_aperture_png(path: Path, aperture: np.ndarray, modulation: str) -> None
         rgba = cmap((phase + np.pi) / (2 * np.pi))
         Image.fromarray((rgba * 255).astype(np.uint8)).save(path)
     else:
-        img = (np.clip(aperture.real, 0, 1) * 255).astype(np.uint8)
-        Image.fromarray(img).save(path)
+        Image.fromarray((np.clip(aperture.real, 0, 1) * 255).astype(np.uint8)).save(path)
 
 
-def render(fig_path: Path, scene: Scene, aperture: np.ndarray, intensity: np.ndarray,
-           metrics: dict, history: dict, tag: str) -> None:
-    n = scene.grid
+# ============================================================================
+# 2. 训练好的模型当正向
+# ============================================================================
+def load_forward_model(checkpoint_path, device):
+    checkpoint = torch.load(Path(checkpoint_path), map_location="cpu", weights_only=False)
+    if checkpoint.get("kind") != "physics":
+        raise SystemExit("这个 checkpoint 不是 physics 模型（纯 U-Net 没有物理层，不能当正向用）")
+    config = PhysicsConfig(**checkpoint["physics_config"])
+    model = ForwardModel(checkpoint["kind"], checkpoint["base_ch"], config.log_alpha,
+                         propagator=checkpoint["propagator"], physics_config=config).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    model.eval()
+    for parameter in model.parameters():
+        parameter.requires_grad_(False)
+    return model, {"config": config, "nf": float(checkpoint["nf"]),
+                   "propagator": checkpoint["propagator"],
+                   "condition_mean": np.asarray(checkpoint["condition_mean"], np.float64),
+                   "condition_std": np.asarray(checkpoint["condition_std"], np.float64),
+                   "epoch": checkpoint.get("epoch")}
+
+
+def condition_for(z_m, config, info, device):
+    """与训练时完全一致的标准化：log(z), log(观察面像素间距)。"""
+    pitch = config.wavelength_m * z_m / (config.grid * config.input_pitch_m)
+    normalized = (np.log(np.array([z_m, pitch])) - info["condition_mean"]) / info["condition_std"]
+    return (torch.tensor(normalized, dtype=torch.float32, device=device)[None],
+            torch.tensor([z_m], dtype=torch.float64, device=device))
+
+
+def predict(model, aperture, condition, z, alpha):
+    """网络输出（log 压缩、峰值归一化）-> 反压缩成强度。"""
+    pred = model(aperture[None, None], condition, z)[0][0, 0].clamp(0.0, 1.0)
+    return (torch.expm1(pred * math.log1p(alpha)) / alpha).clamp_min(0.0)
+
+
+# ============================================================================
+# 3. 优化
+# ============================================================================
+def optimize(scene, config, seed, device, model, condition, z, alpha):
+    r0, r1, c0, c1 = scene.roi
+    target = torch.as_tensor(scene.target, device=device)
+    mask = torch.as_tensor(scene.mask, device=device)
+    roi_slice = (slice(r0, r1), slice(c0, c1))
+    roi_mask = mask[roi_slice]
+    target_norm = target.norm().clamp_min(1e-12)
+
+    theta = init_theta(scene, seed, device)
+    optimiser = torch.optim.Adam([theta], lr=config.lr)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimiser, config.steps,
+                                                           eta_min=config.lr * 0.1)
+    history = {"step": [], "data": [], "outside": [], "binary": []}
+    started = time.time()
+
+    for step in range(config.steps):
+        frac = step / max(config.steps - 1, 1)
+        hard = scene.modulation == "binary" and frac >= config.hard_fraction
+        aperture = aperture_from_theta(theta, scene.modulation, hard, ste=hard)
+        amplitude = predict(model, aperture, condition, z, alpha).sqrt()
+        scale = (amplitude[roi_slice].norm() / target_norm).clamp_min(1e-12)
+        normalized = amplitude / scale
+        diff = normalized[roi_slice] - target
+        data = (roi_mask * diff ** 2).sum() / roi_mask.sum()
+        outside = ((1 - mask) * normalized ** 2).sum() / mask.sum()
+        loss = data + config.w_outside * outside
+        if scene.modulation != "phase":
+            real = aperture.real if torch.is_complex(aperture) else aperture
+            loss = loss + config.w_binary * (real * (1 - real)).mean()
+            loss = loss + config.w_area * (real.mean() - config.fill_target) ** 2
+        optimiser.zero_grad(set_to_none=True)
+        loss.backward()
+        optimiser.step()
+        scheduler.step()
+        if scene.modulation != "phase":
+            with torch.no_grad():
+                theta.clamp_(-config.theta_clip, config.theta_clip)
+        if step % 25 == 0 or step == config.steps - 1:
+            history["step"].append(step)
+            history["data"].append(float(data.detach()))
+            history["outside"].append(float(outside.detach()))
+            real = aperture.real if torch.is_complex(aperture) else aperture
+            history["binary"].append(float((real * (1 - real)).mean().detach()))
+
+    with torch.no_grad():
+        aperture = aperture_from_theta(theta, scene.modulation,
+                                       hard=scene.modulation == "binary", ste=False)
+        intensity = predict(model, aperture, condition, z, alpha)
+        amplitude = intensity.sqrt()
+        scale = (amplitude[roi_slice].norm() / target_norm).clamp_min(1e-12)
+        diff = amplitude[roi_slice] / scale - target
+        score = float((roi_mask * diff ** 2).sum() / roi_mask.sum())
+    return {"aperture": aperture.detach().cpu(), "intensity": intensity.detach().cpu(),
+            "score": score, "history": history, "elapsed_s": time.time() - started}
+
+
+# ============================================================================
+# 4. 指标 / 真值复核 / 可视化
+# ============================================================================
+def roi_amplitude(scene, intensity):
+    r0, r1, c0, c1 = scene.roi
+    amplitude = np.sqrt(np.maximum(intensity[r0:r1, c0:c1], 0))
+    return amplitude * (np.linalg.norm(scene.target)
+                        / max(float(np.linalg.norm(amplitude)), 1e-12))
+
+
+def metrics(scene, aperture, intensity):
+    r0, r1, c0, c1 = scene.roi
+    roi_intensity = intensity[r0:r1, c0:c1]
+    fit = roi_amplitude(scene, intensity)
+    degenerate = float(np.linalg.norm(np.sqrt(np.maximum(roi_intensity, 0)))) < 1e-9
+    tr0, tc0 = twin_origin(scene)
+    window = (slice(tr0, tr0 + (r1 - r0)), slice(tc0, tc0 + (c1 - c0)))
+    twin = intensity[window][::-1, ::-1] / max(float(roi_intensity.max()), 1e-12)
+    roi_scaled = roi_intensity / max(float(roi_intensity.max()), 1e-12)
+    total = float(intensity.sum())
+    is_phase = scene.modulation == "phase"
+    return {"roi": [int(v) for v in scene.roi], "degenerate": bool(degenerate),
+            "corr_amplitude": pearson(fit, scene.target),
+            "mae_amplitude": float(np.abs(fit - scene.target).mean()),
+            "corr_twin": pearson(twin, roi_scaled),
+            "roi_energy_fraction": float(roi_intensity.sum() / total),
+            "aperture_fill_fraction": (float((np.real(aperture) > 0.5).mean())
+                                       if not is_phase else 1.0)}
+
+
+def check_through_glass(scene, aperture, phase, config, z_m):
+    """把光阑放回真实解析模型（玻璃 + 缩放角谱）复算；phase=0 就是无玻璃。"""
+    phase = np.asarray(phase, np.float32)
+    if phase.shape != (config.grid, config.grid):
+        raise SystemExit(f"--check-glass 需要 ({config.grid},{config.grid}) 的相位屏，"
+                         f"实际是 {phase.shape}")
+    intensity = raw_intensity(field_after_glass(aperture, phase), z_m, config,
+                              "scaled_angular_spectrum")
+    r0, r1, c0, c1 = scene.roi
+    fit = roi_amplitude(scene, intensity)
+    result = {"corr_amplitude": pearson(fit, scene.target),
+              "mae_amplitude": float(np.abs(fit - scene.target).mean()),
+              "roi_energy_fraction": float(intensity[r0:r1, c0:c1].sum()
+                                           / max(float(intensity.sum()), 1e-30))}
+    return result, intensity
+
+
+def render_net(path, scene, aperture, intensity, metrics_, history, tag, check=None):
     r0, r1, c0, c1 = scene.roi
     roi_peak = max(float(intensity[r0:r1, c0:c1].max()), 1e-12)
-
-    full = display(intensity, roi_peak)
-    roi_fit = display(intensity[r0:r1, c0:c1], roi_peak)
-    target = scene.canvas
     is_phase = scene.modulation == "phase"
-    tr0, tc0 = twin_origin(scene)
+    fig = plt.figure(figsize=(17.4, 8.6))
+    gs = fig.add_gridspec(2, 3, left=0.033, right=0.975, top=0.85, bottom=0.10,
+                          wspace=0.17, hspace=0.22)
 
-    fig = plt.figure(figsize=(15.2, 9.8))
-    gs = fig.add_gridspec(2, 3, left=0.035, right=0.975, top=0.865, bottom=0.085,
-                          wspace=0.19, hspace=0.20)
+    ax = fig.add_subplot(gs[0, 0])
+    ax.imshow(scene.canvas, cmap="inferno", vmin=0, vmax=1, interpolation="nearest")
+    ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
+                           fill=False, ec="#38e0ff", lw=1.6, ls="--"))
+    ax.set_title("① 目标图样（蓝框 = ROI）", fontsize=12)
 
-    ax0 = fig.add_subplot(gs[0, 0])
-    ax0.imshow(target, cmap="inferno", vmin=0, vmax=1, interpolation="nearest")
-    ax0.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
-                            fill=False, ec="#38e0ff", lw=1.6, ls="--"))
-    ax0.set_title("① 输入的目标衍射图样", fontsize=12, pad=8)
+    ax = fig.add_subplot(gs[0, 1])
+    ax.imshow(display(intensity[r0:r1, c0:c1], roi_peak), cmap="inferno", vmin=0, vmax=1,
+              interpolation="nearest")
+    ax.set_title(f"② 网络预测的图样（ROI）  corr={metrics_['corr_amplitude']:.3f}", fontsize=12)
 
-    ax1 = fig.add_subplot(gs[0, 1])
-    ax1.imshow(roi_fit, cmap="inferno", vmin=0, vmax=1, interpolation="nearest")
-    ax1.set_title(f"② 拟合的衍射图样（ROI 裁剪）  corr = {metrics['corr_amplitude']:.3f}",
-                  fontsize=12, pad=8)
-
-    ax2 = fig.add_subplot(gs[0, 2])
+    ax = fig.add_subplot(gs[0, 2])
     if is_phase:
-        ax2.imshow(np.angle(aperture), cmap="twilight", interpolation="nearest")
-        ax2.set_title("③ 反设计出的相位光阑 φ(x,y)", fontsize=12, pad=8)
+        ax.imshow(np.angle(aperture), cmap="twilight", interpolation="nearest")
+        ax.set_title("③ 反设计光阑（相位）", fontsize=12)
     else:
-        ax2.imshow(aperture.real, cmap="gray", vmin=0, vmax=1, interpolation="nearest")
-        ax2.set_title("③ 反设计出的光阑（白 = 透光）", fontsize=12, pad=8)
+        ax.imshow(np.real(aperture), cmap="gray", vmin=0, vmax=1, interpolation="nearest")
+        ax.set_title("③ 反设计光阑（白 = 透光）", fontsize=12)
 
-    ax3 = fig.add_subplot(gs[1, 0])
-    ax3.imshow(full, cmap="inferno", vmin=0, vmax=1, interpolation="nearest")
-    ax3.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
-                            fill=False, ec="#38e0ff", lw=1.6))
-    if not is_phase:
-        ax3.add_patch(Rectangle((tc0 - 0.5, tr0 - 0.5), c1 - c0, r1 - r0,
-                                fill=False, ec="#7cff9b", lw=1.2, ls=":"))
-        ax3.annotate("共轭孪生像", xy=(tc0 - 1, tr0 - 2), color="#0b3d16", fontsize=9,
-                     ha="left", va="bottom",
-                     bbox=dict(boxstyle="round,pad=0.25", fc="#7cff9b", ec="none", alpha=0.85))
-    ax3.annotate("目标", xy=(c0 - 1, r0 - 2), color="#4a2500", fontsize=9,
-                 ha="left", va="bottom",
-                 bbox=dict(boxstyle="round,pad=0.25", fc="#38e0ff", ec="none", alpha=0.85))
-    ax3.set_title("④ 全视场（log 显示，按 ROI 峰值归一化）", fontsize=12, pad=8)
+    ax = fig.add_subplot(gs[1, 0])
+    ax.imshow(display(intensity, roi_peak), cmap="inferno", vmin=0, vmax=1,
+              interpolation="nearest")
+    ax.add_patch(Rectangle((c0 - 0.5, r0 - 0.5), c1 - c0, r1 - r0,
+                           fill=False, ec="#38e0ff", lw=1.6))
+    ax.set_title("④ 全视场（网络预测，log 显示）", fontsize=12)
 
-    ax4 = fig.add_subplot(gs[1, 1])
-    roi_amp_l2 = np.sqrt(intensity[r0:r1, c0:c1])
-    roi_amp_l2 = roi_amp_l2 * (np.linalg.norm(scene.target) / max(np.linalg.norm(roi_amp_l2), 1e-12))
-    error = np.abs(scene.target - roi_amp_l2)
-    im = ax4.imshow(error, cmap="magma", vmin=0, vmax=max(0.05, float(error.max())),
-                    interpolation="nearest")
-    ax4.set_title("⑤ |目标 − 拟合| （振幅）", fontsize=12, pad=8)
-    cb = plt.colorbar(im, ax=ax4, fraction=0.040, pad=0.02)
-    cb.ax.tick_params(labelsize=8)
+    ax = fig.add_subplot(gs[1, 1])
+    if check is None:
+        error = np.abs(scene.target - roi_amplitude(scene, intensity))
+        title = "⑤ |目标 − 网络预测|（振幅）"
+    else:
+        error = np.abs(scene.target - roi_amplitude(scene, check))
+        title = f"⑤ |目标 − 真实模型|（振幅）  corr={metrics_['check_corr']:.3f}"
+    image = ax.imshow(error, cmap="magma", interpolation="nearest",
+                      vmin=0, vmax=max(0.05, float(error.max())))
+    ax.set_title(title, fontsize=12)
+    fig.colorbar(image, ax=ax, fraction=0.04, pad=0.02)
 
-    ax5 = fig.add_subplot(gs[1, 2])
+    ax = fig.add_subplot(gs[1, 2])
     steps = np.asarray(history["step"])
-    ax5.semilogy(steps, history["data"], color="#d94801", lw=1.6, label="ROI 拟合误差")
-    ax5.semilogy(steps, history["outside"], color="#4c78a8", lw=1.2, ls="--", label="ROI 外能量")
-    ax5.set_xlabel("迭代步", fontsize=9)
-    ax5.grid(alpha=0.25)
-    ax5.legend(fontsize=8, frameon=False)
-    ax5.set_title("⑥ 收敛曲线（对数）" + ("，0.55 处切二值 STE" if scene.modulation == "binary" else ""),
-                  fontsize=11.5, pad=8)
+    ax.semilogy(steps, history["data"], color="#d94801", lw=1.6, label="ROI 拟合误差")
+    ax.semilogy(steps, history["outside"], color="#4c78a8", lw=1.2, ls="--", label="ROI 外能量")
+    ax.set_xlabel("迭代步", fontsize=9)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=8, frameon=False)
+    ax.set_title("⑥ 收敛曲线", fontsize=12)
 
-    for ax in (ax0, ax1, ax2, ax3):
-        ax.set_xticks([])
-        ax.set_yticks([])
-
-    note = ("实振幅光阑的远场必然满足 I(k) = I(−k)：ROI 里的目标会在对跖象限自动出现一个"
-            "旋转 180° 的孪生像（这是物理，不是拟合误差）。",
-            "只取 ROI，或在焦平面上用视场光阑挡掉其余区域，就得到单个 Z。") if not is_phase else (
-        "相位光阑是复振幅，不受共轭对称限制：Z 直接落在光轴中心，没有孪生像。",
-        "条纹尺度 ≈ 光阑像素尺度，实际制作需要 SLM 或亚微米刻蚀。")
-    fig.text(0.035, 0.955, tag, fontsize=14, fontweight="bold", ha="left")
-    fig.text(0.035, 0.922,
-             f"振幅相关 corr = {metrics['corr_amplitude']:.3f}    "
-             f"MAE = {metrics['mae_amplitude']:.3f}    "
-             f"ROI 能量占比 = {metrics['roi_energy_fraction']*100:.1f}%    "
-             + (f"孪生像与 ROI 的相关系数 = {metrics['corr_twin']:.4f}" if not is_phase else
-                f"相位范围 = [−π, π]"),
-             fontsize=9.5, color="#444444", ha="left")
-    fig.text(0.035, 0.030, note[0], fontsize=8.8, color="#666666", ha="left")
-    fig.text(0.035, 0.010, note[1], fontsize=8.8, color="#666666", ha="left")
-    fig.savefig(fig_path, dpi=150, facecolor="white")
+    for axes in fig.axes:
+        axes.set_xticks([])
+        axes.set_yticks([])
+    fig.text(0.033, 0.945, tag, fontsize=13, fontweight="bold", ha="left")
+    line = (f"网络预测 corr = {metrics_['corr_amplitude']:.3f}    "
+            f"MAE = {metrics_['mae_amplitude']:.3f}    "
+            f"ROI 能量占比 = {metrics_['roi_energy_fraction']*100:.1f}%")
+    if check is not None:
+        line += (f"      |      真实模型 corr = {metrics_['check_corr']:.3f}    "
+                 f"MAE = {metrics_['check_mae']:.3f}")
+    fig.text(0.033, 0.915, line, fontsize=9.5, color="#444444", ha="left")
+    fig.text(0.033, 0.030,
+             "正向是训练出来的 physics+残差 网络；网络只在训练分布附近可信，"
+             "设计会把光阑推出分布，所以务必用 --check-glass 复核。",
+             fontsize=8.8, color="#666666", ha="left")
+    fig.savefig(path, dpi=150, facecolor="white")
     plt.close(fig)
 
 
-# ----------------------------------------------------------------------------
+# ============================================================================
 # 5. 入口
-# ----------------------------------------------------------------------------
-
+# ============================================================================
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="目标衍射图样 → 反设计光阑（夫琅禾费，二值振幅或纯相位）",
+        description="目标图样 -> 用训练好的 physics+残差 网络当正向反推光阑",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--char", default="Z", help="要重建的字符（单字符）")
-    parser.add_argument("--target", default=None,
-                        help="目标图样 PNG/JPG/BMP/WEBP/TIFF/NPY；给了就忽略 --char")
-    parser.add_argument("--invert", action="store_true", help="强制目标图反色（白底黑图时用）")
-    parser.add_argument("--no-auto-invert", dest="auto_invert", action="store_false",
-                        help="关闭白底自动反色（默认按整幅中位亮度自动判断）")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="把目标按亮度二值化成剪影，取值 0–1（卡通/照片这类没有纯黑背景的图很有用）")
-    parser.add_argument("--font", default=r"C:\Windows\Fonts\arialbd.ttf", help="渲染 --char 的字体")
-    parser.add_argument("--grid", type=int, default=256, help="光阑/图样网格 N")
-    parser.add_argument("--target-size", type=int, default=96, help="目标图样在画布上的像素尺寸")
-    parser.add_argument("--margin", type=int, default=8, help="ROI 内目标四周留白")
-    parser.add_argument("--modulation", choices=["binary", "gray", "phase"], default="binary",
-                        help="binary=二值振幅；gray=连续振幅；phase=纯相位")
-    parser.add_argument("--roi-mode", choices=["auto", "center"], default="auto",
-                        help="auto：振幅模式放右上象限、相位模式放中心")
-    parser.add_argument("--steps", type=int, default=1500, help="每个 restart 的迭代步数")
-    parser.add_argument("--restarts", type=int, default=2, help="随机初值 restart 次数")
-    parser.add_argument("--lr", type=float, default=0.05, help="Adam 学习率")
-    parser.add_argument("--seed", type=int, default=0, help="随机种子")
-    parser.add_argument("--device", default="auto", help="auto/cpu/cuda")
-    parser.add_argument("--pitch", type=float, default=10e-6, help="掩模像素间距 (m)，仅用于物理尺寸换算")
-    parser.add_argument("--wavelength", type=float, default=532e-9, help="波长 (m)")
-    parser.add_argument("--focal-length", type=float, default=0.5,
-                        help="傅里叶透镜焦距 (m)，仅用于物理尺寸换算；0 表示不换算")
-    parser.add_argument("--out", required=True, help="输出目录（必须不存在）")
+    parser.add_argument("--checkpoint", required=True, help="train.py 的 best_model.pt（physics）")
+    parser.add_argument("--char", default="Z")
+    parser.add_argument("--target", default=None)
+    parser.add_argument("--invert", action="store_true")
+    parser.add_argument("--no-auto-invert", dest="auto_invert", action="store_false")
+    parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument("--font", default=r"C:\Windows\Fonts\arialbd.ttf")
+    parser.add_argument("--target-size", type=int, default=None)
+    parser.add_argument("--margin", type=int, default=None)
+    parser.add_argument("--modulation", choices=["binary", "gray", "phase"], default="binary")
+    parser.add_argument("--roi-mode", choices=["auto", "center"], default="auto")
+    parser.add_argument("--z", type=float, default=None,
+                        help="传播距离 (m)；默认由 checkpoint 的 NF 和整块掩模尺寸算出")
+    parser.add_argument("--steps", type=int, default=1500)
+    parser.add_argument("--restarts", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=0.05)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="auto")
+    parser.add_argument("--check-glass", default=None,
+                        help="真实玻璃的 (grid,grid) 相位 npy：设计完用它复算；"
+                             "给全 0 的相位屏就是“无玻璃”复核")
+    parser.add_argument("--out", required=True)
     return parser.parse_args(argv)
 
 
@@ -566,109 +529,98 @@ def main(argv=None):
     if out.exists():
         raise SystemExit(f"输出目录已存在：{out}（重跑请换名）")
     out.mkdir(parents=True)
-
     device = resolve_device(args.device)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
-    scene = build_scene(args)
-    config = DesignConfig(steps=args.steps, lr=args.lr)
 
-    best = None
-    all_runs = []
+    model, info = load_forward_model(args.checkpoint, device)
+    config = info["config"]
+    z_m = args.z or (config.grid * config.input_pitch_m) ** 2 / (
+        config.wavelength_m * info["nf"])
+    condition, z = condition_for(z_m, config, info, device)
+    print(f"  模型：{args.checkpoint}（epoch {info['epoch']}, propagator={info['propagator']}）",
+          flush=True)
+    print(f"  几何：NF={info['nf']:g}, z={z_m:.4f} m, grid={config.grid}", flush=True)
+
+    scene_args = argparse.Namespace(**vars(args))
+    scene_args.grid = config.grid
+    if scene_args.target_size is None:
+        scene_args.target_size = max(8, int(round(config.grid * 0.375)))
+    if scene_args.margin is None:
+        scene_args.margin = max(2, config.grid // 32)
+    scene = build_scene(scene_args)
+
+    best, runs = None, []
     for i in range(args.restarts):
-        result = optimize(scene, config, args.seed + i, device)
-        all_runs.append({"seed": args.seed + i, "score": result["score"],
-                         "elapsed_s": result["elapsed_s"]})
+        result = optimize(scene, DesignConfig(steps=args.steps, lr=args.lr),
+                          args.seed + i, device, model, condition, z, config.log_alpha)
+        runs.append({"seed": args.seed + i, "score": result["score"],
+                     "elapsed_s": result["elapsed_s"]})
         print(f"  restart {i} (seed={args.seed + i}): score={result['score']:.5f} "
-              f"({result['elapsed_s']:.1f}s)")
+              f"({result['elapsed_s']:.1f}s)", flush=True)
         if best is None or result["score"] < best["score"]:
             best = result
 
     aperture = best["aperture"].numpy()
-    metrics = evaluate(scene, aperture, device)
-    intensity = None
-    field = (torch.as_tensor(aperture, device=device).to(torch.complex64)
-             if scene.modulation == "phase" else torch.as_tensor(aperture, device=device).real)
-    with torch.no_grad():
-        intensity = forward(field).abs().cpu().numpy() ** 2
+    intensity = best["intensity"].numpy()
+    np.maximum(intensity, 0, out=intensity)
+    metrics_ = metrics(scene, aperture, intensity)
+    r0, r1, c0, c1 = scene.roi
 
-    # 物理尺寸换算
-    geometry = {}
-    if args.focal_length > 0:
-        det_pitch = args.wavelength * args.focal_length / (scene.grid * args.pitch)
-        fov = scene.grid * det_pitch
-        fov_mm = fov * 1e3
-        z_width = fov * scene.glyph.shape[0] / scene.grid
-        geometry = {
-            "mask_size_mm": scene.grid * args.pitch * 1e3,
-            "focal_length_m": args.focal_length,
-            "detector_pitch_um": det_pitch * 1e6,
-            "detector_fov_mm": fov_mm,
-            "target_width_mm": z_width * 1e3,
-        }
+    check_metrics, check_intensity = None, None
+    if args.check_glass:
+        check_metrics, check_intensity = check_through_glass(
+            scene, aperture, np.load(args.check_glass), config, z_m)
+        metrics_["check_corr"] = check_metrics["corr_amplitude"]
+        metrics_["check_mae"] = check_metrics["mae_amplitude"]
 
     np.save(out / "target.npy", scene.canvas)
     np.save(out / "aperture.npy", aperture)
-    np.save(out / "pattern_intensity.npy", intensity)
-    np.save(out / "pattern_amplitude.npy", np.sqrt(intensity))
+    np.save(out / "pattern_pred.npy", intensity)
     save_aperture_png(out / "aperture.png", aperture, scene.modulation)
-
-    r0, r1, c0, c1 = scene.roi
     roi_peak = float(intensity[r0:r1, c0:c1].max())
-    roi_display = display(intensity[r0:r1, c0:c1], roi_peak)
-    Image.fromarray((display(intensity, roi_peak) * 255).astype(np.uint8)).save(out / "pattern_fit.png")
-    # ROI 裁剪：和 comparison.png ② 是同一块，112×112，可直接当“相机只拍这一块”的图
-    Image.fromarray((roi_display * 255).astype(np.uint8)).save(out / "pattern_roi.png")
+    Image.fromarray((display(intensity, roi_peak) * 255).astype(np.uint8)).save(
+        out / "pattern_fit.png")
+    Image.fromarray((display(intensity[r0:r1, c0:c1], roi_peak) * 255).astype(np.uint8)).save(
+        out / "pattern_roi.png")
     Image.fromarray((scene.target * 255).astype(np.uint8)).save(out / "target_roi.png")
+    if check_intensity is not None:
+        np.save(out / "pattern_check_intensity.npy", check_intensity)
+        peak = max(float(check_intensity[r0:r1, c0:c1].max()), 1e-12)
+        Image.fromarray((display(check_intensity[r0:r1, c0:c1], peak) * 255)
+                        .astype(np.uint8)).save(out / "pattern_check_roi.png")
     np.save(out / "history.npy", np.array([best["history"]["step"], best["history"]["data"],
                                            best["history"]["outside"]]))
+    render_net(out / "comparison.png", scene, aperture, intensity, metrics_, best["history"],
+               f"{scene.source} → {scene.modulation} 光阑（正向 = 训练好的 physics+残差 网络）",
+               check_intensity)
 
-    tag = f"{scene.source}   →   {scene.modulation} 光阑  ({scene.grid}×{scene.grid})"
-    render(out / "comparison.png", scene, aperture, intensity, metrics, best["history"], tag)
-
-    result = {
-        "target": scene.source,
-        "modulation": scene.modulation,
-        "grid": scene.grid,
-        "roi": metrics["roi"],
-        "roi_box": {
-            "rows": [r0, r1], "cols": [c0, c1],
-            "size": [r1 - r0, c1 - c0],
-            "target_rows": [r0 + args.margin, r0 + args.margin + args.target_size],
-            "target_cols": [c0 + args.margin, c0 + args.margin + args.target_size],
-        },
-        "metrics": {k: v for k, v in metrics.items() if k not in ("roi",)},
-        "warnings": (["掩模退化成近似全黑/全空，本次结果不可用：换一张对比度更高的图，"
-                      "或加大 --steps / --target-size"] if metrics["degenerate"] else []),
-        "geometry": geometry,
-        "design": {
-            "steps": args.steps,
-            "restarts": args.restarts,
-            "seed": args.seed,
-            "best_score": best["score"],
-            "runs": all_runs,
-        },
-        "physics_note": (
-            "实振幅光阑的远场强度共轭对称：I(k)=I(-k)，ROI 内的目标会在中心对称位置"
-            "产生一个旋转 180° 的孪生像（corr_twin≈1）。要得到单个目标，只取 ROI；"
-            "或者改用 phase 调制（复振幅，无此限制）。"
-            if scene.modulation != "phase" else
-            "相位光阑为复振幅，无共轭对称限制，目标位于光轴中心且没有孪生像。"),
-        "command": "python design.py " + " ".join(sys.argv[1:]),
-    }
-    (out / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    result = {"stage": "net_design", "checkpoint": str(args.checkpoint),
+              "target": scene.source, "modulation": scene.modulation, "grid": scene.grid,
+              "nf": info["nf"], "z_m": z_m,
+              "metrics": {k: v for k, v in metrics_.items() if k not in ("roi",)},
+              "check_glass": ({"path": args.check_glass,
+                               "note": "用真实解析模型（玻璃 + 缩放角谱）复算同一块光阑；"
+                                       "相位全 0 即无玻璃",
+                               "metrics": check_metrics} if check_metrics else None),
+              "design": {"steps": args.steps, "restarts": args.restarts, "seed": args.seed,
+                         "best_score": best["score"], "runs": runs},
+              "warnings": (["掩模退化成近似全黑/全空，本次结果不可用"]
+                           if metrics_["degenerate"] else []),
+              "note": ("正向是学出来的：网络对图样的预测误差会直接限制设计可信度；"
+                       "务必用 --check-glass 在真实模型上复算。"),
+              "command": "python design.py " + " ".join(sys.argv[1:])}
+    (out / "result.json").write_text(json.dumps(result, indent=2, ensure_ascii=False,
+                                                allow_nan=False), encoding="utf-8")
 
     print(f"\n完成：{out}")
-    print(f"  corr_amplitude = {metrics['corr_amplitude']:.4f}   "
-          f"MAE = {metrics['mae_amplitude']:.4f}   "
-          f"ROI 能量占比 = {metrics['roi_energy_fraction']*100:.2f}%")
-    if metrics["degenerate"]:
-        print("  [警告] 掩模退化成近似全黑/全空，这次结果不可用；"
-              "换对比度更高的图，或加大 --steps / --target-size 再试")
-    if geometry:
-        print(f"  掩模 {geometry['mask_size_mm']:.2f} mm，f = {args.focal_length} m 时 "
-              f"单像素 {geometry['detector_pitch_um']:.1f} um，视场 {geometry['detector_fov_mm']:.1f} mm，"
-              f"目标宽约 {geometry['target_width_mm']:.1f} mm")
+    print(f"  网络预测 corr = {metrics_['corr_amplitude']:.4f}   "
+          f"MAE = {metrics_['mae_amplitude']:.4f}")
+    if check_metrics is not None:
+        print(f"  [check] 真实模型 corr = {check_metrics['corr_amplitude']:.4f}   "
+              f"MAE = {check_metrics['mae_amplitude']:.4f}")
+    else:
+        print("  [警告] 没有 --check-glass：上面的 corr 只是网络自己的预测，不要当成真结果。")
 
 
 if __name__ == "__main__":

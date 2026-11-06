@@ -12,7 +12,6 @@ venv/
 !/runs/.gitkeep
 /results/*
 !/results/.gitkeep
-/inverse_runs/*
 /design_runs/*
 /inputs/*
 !/inputs/.gitkeep
