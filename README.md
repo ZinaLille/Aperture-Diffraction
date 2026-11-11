@@ -274,6 +274,23 @@ Z 认得出，但网络会高估 0.13–0.22，所以**必须**用 `--check-glas
 每个 NF 组多一个 `(N, grid, grid)` float32：1000 样本、256 网格约 262 MB，七组约 1.8 GB。
 默认 1000 样本 / seed 42 下它与 `data/v1/nf_*/patterns.npy` **逐位相同**，已有 `data/v1` 时完全不用开。
 
+## 6. 阶段三 v3：彻底随机的相位矩阵
+
+`generate_v3.py` 把 v2 的毛玻璃换成**逐像素 i.i.d. 的随机相位矩阵**（相关长度 = 1 像素、
+散射光晕铺满整个视场），其余全部沿用 v2：真值 `I = |P_z[e^{iφ}A]|²`、传播器、后处理、目录格式。
+
+```bash
+python generate_v3.py --samples 1000 --phase-shared --out data/v3
+python generate_v3.py --samples 600 --nf 1 --phase-shared --hologram-fraction 0.2 --out data/v3_nf1
+python generate_v3.py --samples 1000 --phase-shared --phase-dist gaussian --phase-rms-rad 1.5 --out data/v3_g
+```
+
+- 相位矩阵存成 `phase_matrix.npy`（`--phase-shared` 时是 `(grid, grid)`），
+  `design.py --check-glass data/v3/phase_matrix.npy` 可以直接用；`train.py` / `evaluate.py` 不用改；
+- 分布：`uniform`（默认，`U(-π,π]`，散射最彻底）/ `uniform_range`（限幅均匀）/ `gaussian` / `binary`（0/π）；
+- 相关长度 = 0 时远场是散斑、几乎不携带光阑形状信息，所以 v3 更适合当**压力测试**或强扩散体仿真；
+  验收里多了两项 v3 专属检查：`phase_iid`（相邻像素相关 ≈ 0）和 `phase_unitary_energy`（相位不改变总能量）。
+
 ## 项目结构
 
 ```text
@@ -285,6 +302,7 @@ Aperture-Diffraction/
 ├── train.py             # 模型、损失、训练与曲线/样例图
 ├── evaluate.py          # 纯物理/模型对比 + 全部可视化
 ├── generate_v2.py       # v2 数据：光阑 + 一块固定的随机相位毛玻璃 → 含扰动的衍射图样
+├── generate_v3.py       # v3 数据：光阑 + 彻底随机的二维相位矩阵 → 衍射图样
 ├── design.py            # 目标图样 → 反设计光阑（正向 = 训练好的 physics+残差 网络）
 ├── data/.gitkeep        # 生成的数据（不提交）
 ├── runs/.gitkeep        # 权重与训练记录（不提交）

@@ -96,6 +96,28 @@ python design.py --checkpoint runs/v2_nf1_holo/nf_1/physics/best_model.pt --targ
 # 纯 v1（无毛玻璃）也可以混：
 python generate.py --samples 1000 --hologram-fraction 0.2 --out data/v1_holo
 
+# 2.10 "更厚"的毛玻璃：同样的颗粒度、更大的相位起伏（NF=1 全流程，含混入密集掩模）
+#      现有 v2_nf1 / v2_nf1_holo 是 rms 0.6 rad + 相关长度 794 µm，这一组换成 rms 1.5 rad（约 2.5 倍厚）
+python generate_v2.py --samples 1000 --nf 1 --glass-shared --glass-correlation-um 794 --glass-rms-rad 1.5 --hologram-fraction 0.2 --out data/v2_nf1_thick
+python train.py --data data/v2_nf1_thick --groups 1 --propagator hybrid --lambda-freq 0.02 --epochs 50 --out runs/v2_nf1_thick
+python evaluate.py --data data/v2_nf1_thick --run runs/v2_nf1_thick --out results/eval_v2_nf1_thick
+python design.py --checkpoint runs/v2_nf1_thick/nf_1/physics/best_model.pt --char Z --modulation gray --check-glass data/v2_nf1_thick/glass_phase.npy --out design_runs/v2_nf1_thick_Z
+python design.py --checkpoint runs/v2_nf1_thick/nf_1/physics/best_model.pt --target inputs/ZJU.jpg --modulation gray --check-glass data/v2_nf1_thick/glass_phase.npy --out design_runs/v2_nf1_thick_ZJU
+# 想再厚就往 --glass-rms-rad 上加（1.5 -> 2.0 -> 3.0），颗粒度由 --glass-correlation-um 控制：
+#   同样 rms、相关长度越小 = 越"磨砂"（散射角更大）
+python generate_v2.py --samples 1000 --nf 1 --glass-shared --glass-correlation-um 794 --glass-rms-rad 2.0 --hologram-fraction 0.2 --out data/v2_nf1_thick2
+# 只想快速确认流程（不走 1000 个样本）：把 --samples 改小、训练加 --epochs 10 --batch-size 32
+
+# 2.11 v3：把毛玻璃换成"彻底随机的二维相位矩阵"（逐像素独立，相关长度 = 1 px）
+python generate_v3.py --samples 1000 --phase-shared --out data/v3
+python generate_v3.py --samples 1000 --phase-shared --hologram-fraction 0.2 --out data/v3_holo
+python train.py --data data/v3 --propagator hybrid --lambda-freq 0.02 --out runs/v3
+python evaluate.py --data data/v3 --run runs/v3 --out results/eval_v3
+python design.py --checkpoint runs/v3/nf_1/physics/best_model.pt --char Z --check-glass data/v3/phase_matrix.npy --out design_runs/v3_Z
+# 其它相位分布：gaussian(需 --phase-rms-rad) / binary(0 或 π) / uniform_range(需 --phase-range-deg)
+python generate_v3.py --samples 1000 --phase-shared --phase-dist gaussian --phase-rms-rad 1.5 --out data/v3_g
+python generate_v3.py --samples 1000 --phase-shared --phase-dist binary --phase-pi-prob 0.5 --out data/v3_b
+
 
 ================================================================
  3. 反设计（design.py：正向 = 训练好的 physics+残差 网络）
@@ -186,6 +208,15 @@ python evaluate.py --data data/demo --out results/demo
   --save-clean                   额外保存无玻璃图样
   --nf 1                         只生成指定 NF 组
   --hologram-fraction / -mode / -fill   同上，混入设计产物分布
+
+【generate_v3.py】（相位屏 = 逐像素 i.i.d. 随机矩阵，无相关长度）
+  --phase-dist NAME              uniform（默认，U(-π,π]）/ uniform_range / gaussian / binary
+  --phase-range-deg F            uniform_range 的半幅（度）
+  --phase-rms-rad F              gaussian 的标准差（弧度，默认 2.0）
+  --phase-pi-prob F              binary 取 π 的概率（默认 0.5）
+  --phase-shared                 整份数据共用同一块相位矩阵（也可写 --glass-shared）
+  --save-clean / --nf / --hologram-* / --samples / --seed / --grid  同上
+  输出里相位矩阵叫 phase_matrix.npy（不是 glass_phase.npy）
 
 【train.py】
   --data DIR             数据目录
